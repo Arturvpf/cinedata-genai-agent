@@ -22,6 +22,7 @@ from cinedata.models import QueryResult, SQLiteValue
 
 logger = logging.getLogger(__name__)
 DEFAULT_MAX_ROWS = 100
+DEFAULT_QUERY_TIMEOUT_SECONDS = 5.0
 MAX_QUERY_ROWS = 1_000
 MAX_VALUE_BYTES = 1_000_000
 MAX_RESULT_BYTES = 1_000_000
@@ -85,9 +86,21 @@ def _value_size(value: SQLiteValue) -> int:
     return 8  # Estimativa fixa para valores numéricos e NULL.
 
 
+def validate_query_timeout(timeout_seconds: float) -> float:
+    """Valide o prazo antes de gerar SQL ou abrir uma conexão de execução."""
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not 0 < timeout_seconds <= 60
+    ):
+        raise ValueError("timeout_seconds deve ser maior que zero e até 60 segundos.")
+    return float(timeout_seconds)
+
+
 def execute_readonly(
     database_path: str | Path, sql: str, *, allowed_tables: Collection[str],
-    max_rows: int = DEFAULT_MAX_ROWS, timeout_seconds: float = 5.0,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    timeout_seconds: float = DEFAULT_QUERY_TIMEOUT_SECONDS,
 ) -> QueryResult:
     """Valide e execute SQL em uma conexão exclusiva, com limites de leitura.
 
@@ -98,13 +111,7 @@ def execute_readonly(
     """
     if type(max_rows) is not int or not 1 <= max_rows <= MAX_QUERY_ROWS:
         raise ValueError(f"max_rows deve ser inteiro entre 1 e {MAX_QUERY_ROWS}.")
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, (int, float))
-        or not math.isfinite(timeout_seconds)
-        or not 0 < timeout_seconds <= 60
-    ):
-        raise ValueError("timeout_seconds deve ser um número entre 0 e 60 segundos.")
+    timeout_seconds = validate_query_timeout(timeout_seconds)
     sql = validate_sql(sql)
 
     with readonly_connection(database_path) as connection:

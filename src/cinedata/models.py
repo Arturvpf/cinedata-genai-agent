@@ -75,3 +75,10 @@ class QueryResult:
     rows: tuple[tuple[SQLiteValue, ...], ...]
     truncated: bool
     elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class AgentResult(QueryResult):
+    """Resultado de execução acrescido da pergunta que originou o SQL."""
+
+    question: str

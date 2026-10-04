@@ -1,18 +1,27 @@
-"""Orquestração incremental do agente, começando pela geração de SQL."""
+"""Geração, validação e execução de consultas a partir de perguntas."""
 
 from datetime import date
 import logging
 from pathlib import Path
 from typing import Protocol
 
-from cinedata.database import DEFAULT_MAX_ROWS, MAX_QUERY_ROWS, readonly_connection
+from cinedata.database import (
+    DEFAULT_MAX_ROWS,
+    DEFAULT_QUERY_TIMEOUT_SECONDS,
+    MAX_QUERY_ROWS,
+    execute_readonly,
+    readonly_connection,
+    validate_query_timeout,
+)
 from cinedata.exceptions import (
     DatabaseConnectionError,
     InvalidModelResponseError,
     QueryBlockedError,
+    QueryExecutionError,
     SchemaInspectionError,
 )
 from cinedata.guardrails import sanitize_sql, validate_sql
+from cinedata.models import AgentResult
 from cinedata.prompts import build_sql_prompt
 from cinedata.schema import format_schema_for_llm, inspect_schema
 
@@ -29,7 +38,7 @@ class TextCompletionClient(Protocol):
 
 
 class CineDataAgent:
-    """Reutilize o esquema real para gerar SQL, sem executar a consulta ainda.
+    """Reutilize o esquema real para gerar SQL e executar consultas protegidas.
 
     O cliente é fornecido pelo chamador, que continua responsável por fechá-lo.
     A inicialização lê somente os metadados e não faz chamadas ao modelo.
@@ -38,11 +47,13 @@ class CineDataAgent:
     def __init__(
         self, database_path: str | Path, client: TextCompletionClient, *,
         max_rows: int = DEFAULT_MAX_ROWS, reference_date: date | None = None,
+        query_timeout_seconds: float = DEFAULT_QUERY_TIMEOUT_SECONDS,
     ) -> None:
         if type(max_rows) is not int or not 1 <= max_rows <= MAX_QUERY_ROWS:
             raise ValueError(f"max_rows deve ser inteiro entre 1 e {MAX_QUERY_ROWS}.")
         if reference_date is not None and type(reference_date) is not date:
             raise ValueError("reference_date deve ser uma data sem horário.")
+        self.query_timeout_seconds = validate_query_timeout(query_timeout_seconds)
         try:
             self.database_path = Path(database_path).expanduser().resolve()
         except (OSError, ValueError, RuntimeError) as exc:
@@ -96,3 +107,28 @@ class CineDataAgent:
             raise
         logger.info("SQL extraído e aprovado pela validação textual.")
         return sql
+
+    def query(self, question: str) -> AgentResult:
+        """Gere e execute SQL uma vez, sem correção ou resposta final do modelo."""
+        timeout = validate_query_timeout(self.query_timeout_seconds)
+        sql = self.generate_sql(question)
+        logger.info("Executando consulta gerada em modo somente leitura.")
+        try:
+            result = execute_readonly(
+                self.database_path, sql, allowed_tables=self._allowed_tables,
+                max_rows=self.max_rows, timeout_seconds=timeout,
+            )
+        except QueryBlockedError:
+            logger.warning("Consulta gerada bloqueada pelo SQLite.")
+            raise
+        except QueryExecutionError as exc:
+            logger.warning("Falha na execução SQL: %s.", type(exc).__name__)
+            raise
+        return AgentResult(
+            question=question,
+            sql=result.sql,
+            columns=result.columns,
+            rows=result.rows,
+            truncated=result.truncated,
+            elapsed_seconds=result.elapsed_seconds,
+        )

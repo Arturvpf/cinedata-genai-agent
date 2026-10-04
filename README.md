@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails e o executor com limites de leitura, com testes automatizados. A integração com o modelo, o agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura e o cliente OpenRouter, com testes automatizados. Os prompts, o agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -14,7 +14,7 @@ O banco fornecido contém dez tabelas de dados do modelo dimensional e uma tabel
 
 - Python 3.11 ou superior.
 - O arquivo local `cinerocket.db` para as consultas.
-- Uma chave OpenRouter quando a integração com o modelo estiver pronta.
+- Uma chave OpenRouter para chamadas reais ao modelo.
 
 ## Instalação
 
@@ -66,7 +66,7 @@ Edite o `.env` local e preencha `OPENROUTER_API_KEY`. A chave fica fora do Git. 
 | `OPENROUTER_MODEL` | Identificador do modelo | `openrouter/free` |
 | `DATABASE_PATH` | Caminho do arquivo SQLite | `cinerocket.db` |
 
-O [roteador gratuito `openrouter/free`](https://openrouter.ai/openrouter/free) seleciona um modelo gratuito disponível. O modelo já pode ser configurado pelo `.env` sem editar o código; a integração com a API será implementada na próxima etapa.
+O [roteador gratuito `openrouter/free`](https://openrouter.ai/openrouter/free) seleciona um modelo gratuito disponível. O modelo pode ser configurado pelo `.env` sem editar o código e já é utilizado pelo cliente da API.
 
 ### Leitura das configurações
 
@@ -92,6 +92,38 @@ O `.env` é opcional quando a chave já está definida no ambiente. A chave é o
 A chave é omitida de `repr(settings)` e `str(settings)`. Não imprima `settings.api_key`; ela será utilizada somente pelo cliente da API. O carregador não registra os valores de configuração em logs.
 
 Nesta etapa, a instalação não envia chamadas ao OpenRouter nem consome sua cota. As instruções de execução da CLI serão adicionadas quando essa funcionalidade estiver pronta.
+
+## Cliente OpenRouter
+
+O `OpenRouterClient`, em `src/cinedata/llm.py`, utiliza o SDK OpenAI instalado com a base URL `https://openrouter.ai/api/v1` e a chave OpenRouter de `Settings`. O método `complete` envia uma mensagem `system` e uma mensagem `user` pelo endpoint de Chat Completions e devolve texto. A inicialização não realiza requisições. O cliente pode ser reutilizado e não conserva histórico de conversas.
+
+O exemplo abaixo faz **uma chamada real** quando executado com uma chave válida. Os testes automatizados usam transporte HTTP simulado e não consomem cota.
+
+```python
+from cinedata.config import load_settings
+from cinedata.exceptions import CineDataError
+from cinedata.llm import OpenRouterClient
+
+try:
+    settings = load_settings()
+    with OpenRouterClient(settings) as client:
+        text = client.complete(
+            "Responda em português de forma breve.",
+            "Diga olá em uma frase.",
+            max_tokens=100,
+        )
+        print(text)
+except CineDataError as error:
+    print(error)
+```
+
+Cada `complete` realiza uma única tentativa. O SDK recebe `max_retries=0`: falhas de rede, HTTP 429 e erros do provedor não provocam repetições automáticas. Não há troca automática de modelo. A futura correção de SQL será uma operação separada do agente, limitada a uma tentativa.
+
+O timeout de rede padrão é de trinta segundos; `timeout_seconds` aceita valores maiores que zero e até cento e vinte segundos. Esse timeout controla as operações de rede do SDK e não representa um prazo total para toda a geração. A chamada usa `max_tokens=2048` por padrão, configurável entre um e 8192 tokens. O cliente aceita até cem mil caracteres no conjunto dos prompts e até cinquenta mil caracteres na resposta textual. A validação de SQL mantém seu limite próprio de vinte mil caracteres.
+
+O cliente exige uma única resposta textual finalizada. Respostas vazias, malformadas, incompletas por limite de tokens, recusas e chamadas de ferramentas são rejeitadas com `InvalidModelResponseError`; nenhum SQL é executado por esse módulo. A interpretação de `finish_reason` segue o formato de [Chat Completions da documentação oficial OpenAI](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+
+Erros de autenticação/acesso levantam `LLMAuthenticationError`; limite de requisições levanta `LLMRateLimitError`; timeout de rede levanta `LLMTimeoutError`. Falhas de conexão, créditos insuficientes, modelo inexistente e outros erros HTTP levantam `LLMServiceError`, com mensagens em português. O código HTTP fica disponível em `status_code`, quando aplicável. A aplicação não imprime nem registra o corpo do erro HTTP, a chave, os prompts ou o conteúdo gerado. Use o bloco `with` ou chame `close()` para fechar o cliente, inclusive após falhas.
 
 ## Conexão SQLite
 
@@ -251,4 +283,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Eles não dependem do banco da atividade nem de chave OpenRouter.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Os testes do cliente usam o SDK real com transporte HTTP simulado para verificar requisições, autenticação, ausência de retries, erros de rede/HTTP, validação de respostas e fechamento do cliente. Eles não dependem do banco da atividade nem de chave OpenRouter e não enviam chamadas reais à API.

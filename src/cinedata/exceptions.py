@@ -29,6 +29,26 @@ class InvalidModelResponseError(CineDataError):
     """A resposta do modelo não segue o formato esperado."""
 
 
+class LLMServiceError(CineDataError):
+    """Falha ao acessar o modelo, sem expor o corpo da resposta HTTP."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class LLMAuthenticationError(LLMServiceError):
+    """A API recusou a chave ou o acesso ao modelo."""
+
+
+class LLMRateLimitError(LLMServiceError):
+    """A API informou um limite de requisições ou capacidade."""
+
+
+class LLMTimeoutError(LLMServiceError):
+    """A chamada ao modelo excedeu o timeout de rede."""
+
+
 class QueryBlockedError(CineDataError):
     """A consulta viola as regras de segurança do agente."""
 

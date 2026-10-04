@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração e a conexão SQLite em modo somente leitura, com testes automatizados. A introspecção reutilizável, o agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura e a listagem reutilizável de tabelas, com testes automatizados. A introspecção de colunas e relacionamentos, o agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -86,6 +86,24 @@ with readonly_connection("cinerocket.db") as connection:
 
 O módulo também desativa `trusted_schema` e apresenta erros específicos para arquivo ausente ou inválido. A validação do SQL gerado pelo modelo será adicionada na etapa de guardrails.
 
+## Inspeção de tabelas
+
+Com o ambiente virtual ativo, execute:
+
+```bash
+python scripts/inspect_database.py
+```
+
+O script abre o `cinerocket.db` da raiz do projeto em modo somente leitura e lista as tabelas reais em ordem alfabética. Para outro arquivo:
+
+```bash
+python scripts/inspect_database.py --database "caminho/do/banco.db"
+```
+
+A função `list_tables`, em `src/cinedata/schema.py`, pode ser reutilizada pelo agente. Ela consulta o catálogo do banco principal, exclui as tabelas internas `sqlite_*` e preserva as tabelas de controle da aplicação. O banco fornecido retorna dez tabelas do modelo dimensional e `alembic_version`. Views, índices e triggers não são incluídos nessa listagem.
+
+Nesta etapa, o script mostra apenas os nomes das tabelas. Colunas, chaves, contagens e amostras serão acrescentadas nas próximas etapas de introspecção. O parâmetro `--database` escolhe o arquivo; o script ainda não lê `DATABASE_PATH` do `.env`.
+
 ## Testes
 
 Com o ambiente virtual ativo, execute:
@@ -100,4 +118,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos e fechamento da conexão. Eles não dependem do banco da atividade nem de chave OpenRouter.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão e listagem de tabelas. Eles não dependem do banco da atividade nem de chave OpenRouter.

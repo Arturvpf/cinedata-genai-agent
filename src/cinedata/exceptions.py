@@ -11,3 +11,7 @@ class DatabaseConnectionError(CineDataError):
 
 class DatabaseNotFoundError(DatabaseConnectionError):
     """O caminho informado não aponta para um arquivo existente."""
+
+
+class SchemaInspectionError(CineDataError):
+    """Não foi possível consultar a estrutura do banco SQLite."""

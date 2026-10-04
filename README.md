@@ -1,8 +1,8 @@
 # CineData Analytics — Agente GenAI Text-to-SQL
 
-Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
+Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usa um modelo via OpenRouter para gerar consultas SQLite, valida o SQL antes da execução e apresenta os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter e o agente com geração, execução, correção única de SQL e resposta em português, com testes automatizados. A CLI será adicionada nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém o pacote Python, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter, o agente com correção única e resposta em português e a CLI, com testes automatizados. A próxima etapa é o conjunto de perguntas e consultas para avaliação.
 
 ## Banco de dados local
 
@@ -91,7 +91,62 @@ O `.env` é opcional quando a chave já está definida no ambiente. A chave é o
 
 A chave é omitida de `repr(settings)` e `str(settings)`. Não imprima `settings.api_key`; ela será utilizada somente pelo cliente da API. O carregador não registra os valores de configuração em logs.
 
-Nesta etapa, a instalação não envia chamadas ao OpenRouter nem consome sua cota. As instruções de execução da CLI serão adicionadas quando essa funcionalidade estiver pronta.
+A instalação e a leitura da configuração não enviam chamadas ao OpenRouter nem consomem sua cota. Para fazer perguntas, use a CLI descrita na seção seguinte.
+
+## Execução pela linha de comando
+
+Depois de instalar as dependências, configurar o `.env` e colocar o `cinerocket.db` na raiz, execute no ambiente virtual:
+
+```bash
+python main.py
+```
+
+No PowerShell, também é possível executar sem ativar o ambiente:
+
+```powershell
+.\.venv\Scripts\python.exe main.py
+```
+
+Digite uma pergunta e pressione Enter. O agente mostra a resposta em português e espera a próxima pergunta. Para encerrar, digite `sair`, `exit` ou `quit`. Linhas em branco são ignoradas; EOF encerra a sessão; `Ctrl+C` interrompe a operação e fecha o cliente. Cada pergunta é independente, sem memória das anteriores. O esquema é coletado uma vez por sessão.
+
+### Pergunta única e auditoria
+
+```bash
+python main.py --question "Quais são os cinco filmes com maior bilheteria?"
+python main.py --debug --question "Quantos filmes existem no catálogo?"
+python main.py --raw --question "Quais são os cinco filmes mais populares?"
+python main.py --raw --debug
+```
+
+`--question` executa uma pergunta e encerra. Sem essa opção, a CLI é interativa. No modo padrão, mostra a resposta; `--debug` acrescenta pergunta, SQL executado, colunas, linhas, quantidade retornada e tempo da consulta SQLite final. Os logs das etapas aparecem em stderr e não incluem chave, pergunta, SQL, valores ou resposta gerada.
+
+`--raw` usa `agent.query`: mostra SQL e dados sem enviar os resultados para redação pelo modelo. Normalmente consome uma chamada de geração; pode consumir mais uma para a correção única. O modo padrão normalmente faz duas chamadas, ou três com correção; nenhuma chamada de redação é feita para resultados sem linhas. Não há requisições automáticas ao iniciar ou ao encerrar a sessão.
+
+A exibição raw/debug conserva a ordem das colunas e linhas, inclusive colunas com nomes repetidos, e mostra `NULL` como ausência. Textos são abreviados após 240 caracteres, BLOBs aparecem somente com seu tamanho e caracteres de controle do terminal são representados como texto. A CLI informa quando abrevia valores e quando o executor retorna um resultado parcial. Essa apresentação não é um formato de exportação JSON; os valores completos permanecem em `AgentResult.rows` na API Python.
+
+### Configuração da execução
+
+```bash
+python main.py --env-file "config/local.env" --raw --max-rows 20 --query-timeout 10
+python main.py --help
+python -m cinedata --help
+```
+
+`--env-file` seleciona o arquivo de configuração; o padrão é `.env` na pasta de execução. O caminho relativo de `DATABASE_PATH` é resolvido contra a pasta desse arquivo. Variáveis de ambiente continuam tendo prioridade. `--max-rows` aceita de 1 a 1000, com padrão 100; `--query-timeout` aceita um prazo maior que zero e até 60 segundos, com padrão 5, aplicado separadamente a cada tentativa SQLite. O timeout da rede mantém o padrão do cliente OpenRouter. A ajuda funciona sem chave nem banco.
+
+Perguntas devem ter até quatro mil caracteres. Erros de configuração, banco, API e SQL são apresentados em português sem stack traces. Se apenas a redação falhar, a CLI mostra o resultado SQL já obtido e não faz outra chamada. Em modo interativo, uma falha de consulta permite ao usuário fazer outra pergunta; não repete a anterior automaticamente.
+
+Na pergunta única, os códigos de saída são: `0` para sucesso, `1` para falha de consulta/redação, `2` para erro de argumentos ou inicialização e `130` para interrupção. A saída voluntária ou EOF do modo interativo retorna `0`, mesmo que uma pergunta anterior tenha falhado.
+
+### Exemplos de perguntas
+
+- Quais são os dez filmes com maior receita em USD?
+- Quais são os cinco filmes mais populares?
+- Quantos filmes existem por gênero?
+- Quais são os cinco filmes mais avaliados pelos usuários?
+- Quais filmes apresentam a maior diferença entre nota dos usuários e nota IMDb?
+
+As perguntas e os comandos de consulta acima usam a API real quando executados com uma chave válida. Os testes automatizados usam clientes simulados.
 
 ## Cliente OpenRouter
 
@@ -334,7 +389,7 @@ O prazo de execução se aplica separadamente a cada tentativa SQLite; não é u
 
 `CineDataAgent.ask(pergunta)` realiza o mesmo fluxo protegido de `query` e acrescenta uma resposta em `AgentResult.answer`. Para resultados com linhas, faz uma chamada adicional ao modelo, sem repetição automática. O resultado conserva o SQL executado, as colunas, as linhas originais e os indicadores de correção e resultado parcial. Para nenhuma linha, devolve localmente “Nenhum resultado foi encontrado para esta consulta.”, sem consumir uma chamada de redação. Agregações com uma linha contendo zero ou `NULL` seguem para redação normalmente.
 
-O exemplo abaixo faz **chamadas reais** com uma chave válida: normalmente duas (geração de SQL e redação), ou três se houver a correção única. Resultados vazios dispensam a redação. Não há CLI nesta etapa.
+O exemplo abaixo faz **chamadas reais** com uma chave válida: normalmente duas (geração de SQL e redação), ou três se houver a correção única. Resultados vazios dispensam a redação. A CLI usa o mesmo método no modo padrão.
 
 ```python
 from cinedata.agent import CineDataAgent
@@ -434,6 +489,8 @@ O executor reduz os [limites nativos do SQLite](https://www.sqlite.org/limits.ht
 Bloqueios de segurança levantam `QueryBlockedError`; prazo excedido levanta `QueryTimeoutError`; tamanho ou complexidade excedida levanta `QueryLimitError`. Outros erros SQLite são convertidos em `QueryExecutionError`, com mensagem em português. Para erros de SQL, `recoverable=True` e `sqlite_error` preserva o diagnóstico para a correção única do agente. Timeout e limites de recursos não são recuperáveis. O executor não faz chamadas ao modelo nem repete consultas; a tentativa de correção é administrada pelo agente. A conexão é fechada em todos os casos, e o log registra somente quantidade de linhas, indicador de resultado parcial e tempo, sem valores retornados.
 
 ## Testes
+
+Os testes da CLI verificam o fluxo com configuração e banco temporários, consulta única, interação, raw/debug, limites, correção única, erros de configuração/API/SQL, recuperação dos dados após falha de redação, saída por comando/EOF/Ctrl+C e fechamento do cliente. Também verificam que a ajuda e argumentos inválidos não acessam a API e que a saída não interpreta controles de terminal vindos dos dados.
 
 Os testes de redação usam SQLite local e modelos simulados para verificar respostas, resultados vazios e parciais, agregações zero/`NULL`, correção seguida de redação, limites de contexto após escapes JSON, preservação das linhas originais e recuperação do resultado após falha da API. Também verificam que a redação não executa o texto do modelo e que os logs não expõem o conteúdo consultado. Nenhuma chamada real é feita nesses testes.
 

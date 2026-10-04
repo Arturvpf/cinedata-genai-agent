@@ -5,6 +5,14 @@ class CineDataError(Exception):
     """Erro esperado durante o uso do agente."""
 
 
+class ConfigurationError(CineDataError):
+    """Configuração local ausente, vazia ou inválida."""
+
+
+class MissingAPIKeyError(ConfigurationError):
+    """A chave OpenRouter não foi configurada."""
+
+
 class DatabaseConnectionError(CineDataError):
     """O arquivo SQLite não pôde ser aberto para leitura."""
 

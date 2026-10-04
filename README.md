@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails e o executor com limites de leitura, com testes automatizados. A integração com o modelo, o agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails e o executor com limites de leitura, com testes automatizados. A integração com o modelo, o agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -66,7 +66,30 @@ Edite o `.env` local e preencha `OPENROUTER_API_KEY`. A chave fica fora do Git. 
 | `OPENROUTER_MODEL` | Identificador do modelo | `openrouter/free` |
 | `DATABASE_PATH` | Caminho do arquivo SQLite | `cinerocket.db` |
 
-O [roteador gratuito `openrouter/free`](https://openrouter.ai/openrouter/free) seleciona um modelo gratuito disponível. Você poderá trocar o modelo pelo `.env` sem editar o código. A integração com a API e a leitura dessas configurações serão implementadas nas próximas etapas.
+O [roteador gratuito `openrouter/free`](https://openrouter.ai/openrouter/free) seleciona um modelo gratuito disponível. O modelo já pode ser configurado pelo `.env` sem editar o código; a integração com a API será implementada na próxima etapa.
+
+### Leitura das configurações
+
+A função `load_settings`, em `src/cinedata/config.py`, lê o `.env` em UTF-8, inclusive com BOM do Windows, e devolve configurações imutáveis. Variáveis de ambiente têm prioridade sobre os valores do arquivo, inclusive quando estão vazias. O carregamento não altera o ambiente do processo, não abre o banco e não faz chamadas à API.
+
+```python
+from cinedata.config import load_settings
+from cinedata.exceptions import ConfigurationError
+
+try:
+    settings = load_settings()
+except ConfigurationError as error:
+    print(error)
+else:
+    print(settings.model)
+    print(settings.database_path)
+```
+
+Por padrão, apenas o `.env` da pasta atual é lido. É possível indicar outro arquivo com `load_settings("config/.env")`; não há busca automática em pastas superiores. Um `DATABASE_PATH` relativo é resolvido a partir da pasta desse arquivo, mesmo quando o valor vem do ambiente. Caminhos absolutos são preservados e `~` é expandido. A existência e a validade do banco são verificadas ao abrir a conexão.
+
+O `.env` é opcional quando a chave já está definida no ambiente. A chave é obrigatória; sua ausência levanta `MissingAPIKeyError`, com orientação em português. Se modelo e caminho não forem definidos, os padrões são `openrouter/free` e `cinerocket.db`. Valores explicitamente vazios ou com caracteres de controle são rejeitados com `ConfigurationError`. Os valores são lidos diretamente, sem expansão de referências `${VAR}` no `.env`.
+
+A chave é omitida de `repr(settings)` e `str(settings)`. Não imprima `settings.api_key`; ela será utilizada somente pelo cliente da API. O carregador não registra os valores de configuração em logs.
 
 Nesta etapa, a instalação não envia chamadas ao OpenRouter nem consome sua cota. As instruções de execução da CLI serão adicionadas quando essa funcionalidade estiver pronta.
 
@@ -228,4 +251,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Eles não dependem do banco da atividade nem de chave OpenRouter.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Eles não dependem do banco da atividade nem de chave OpenRouter.

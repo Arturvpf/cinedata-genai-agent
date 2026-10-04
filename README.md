@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usa um modelo via OpenRouter para gerar consultas SQLite, valida o SQL antes da execução e apresenta os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém o pacote Python, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter, o agente com correção única e resposta em português e a CLI, com testes automatizados. A próxima etapa é o conjunto de perguntas e consultas para avaliação.
+O desenvolvimento está organizado em etapas. O repositório contém o pacote Python, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter, o agente com correção única e resposta em português, a CLI e perguntas com consultas de referência para avaliação, com testes automatizados.
 
 ## Banco de dados local
 
@@ -488,7 +488,23 @@ O executor reduz os [limites nativos do SQLite](https://www.sqlite.org/limits.ht
 
 Bloqueios de segurança levantam `QueryBlockedError`; prazo excedido levanta `QueryTimeoutError`; tamanho ou complexidade excedida levanta `QueryLimitError`. Outros erros SQLite são convertidos em `QueryExecutionError`, com mensagem em português. Para erros de SQL, `recoverable=True` e `sqlite_error` preserva o diagnóstico para a correção única do agente. Timeout e limites de recursos não são recuperáveis. O executor não faz chamadas ao modelo nem repete consultas; a tentativa de correção é administrada pelo agente. A conexão é fechada em todos os casos, e o log registra somente quantidade de linhas, indicador de resultado parcial e tempo, sem valores retornados.
 
+## Perguntas e consultas de avaliação
+
+`tests/evaluation_questions.json` reúne 21 perguntas, critérios de revisão e SQL de referência para as categorias do enunciado, perguntas adicionais e sinônimos de receita. Para listar ou executar as referências no banco local, sem chave e sem chamadas à API:
+
+```bash
+python scripts/evaluate_reference_queries.py --list
+python scripts/evaluate_reference_queries.py
+python scripts/evaluate_reference_queries.py --case top_receita --show-results
+```
+
+O avaliador usa o mesmo executor protegido, com limite de mil linhas e prazo padrão de trinta segundos por consulta. Não altera o banco. As referências extensas de elenco usam SQLite 3.35 ou superior. A pergunta dos últimos cinco anos utiliza a data fixa `2026-10-04`, substituível por `--reference-date`.
+
+Executar o SQL de referência verifica essas consultas e seus resultados; não mede automaticamente a qualidade do modelo. O procedimento para comparar uma pergunta real, reproduzir a data e revisar critérios está em [docs/evaluation.md](docs/evaluation.md).
+
 ## Testes
+
+Os testes de avaliação executam as 21 referências em um banco temporário, com valores controlados. Verificam sinônimos, empates, margem percentual, nulos, fronteiras de datas, papéis, mínimo de filmes avaliados, grupos vazios, diferenças de notas e agregações sem multiplicar filmes por outras pontes. Também validam o formato do conjunto e a execução do avaliador sem API.
 
 Os testes da CLI verificam o fluxo com configuração e banco temporários, consulta única, interação, raw/debug, limites, correção única, erros de configuração/API/SQL, recuperação dos dados após falha de redação, saída por comando/EOF/Ctrl+C e fechamento do cliente. Também verificam que a ajuda e argumentos inválidos não acessam a API e que a saída não interpreta controles de terminal vindos dos dados.
 

@@ -1,0 +1,150 @@
+[
+  {
+    "id": "top_receita",
+    "category": "bilheteria",
+    "question": "Quais são os dez filmes com maior receita em USD?",
+    "criteria": ["Excluir receitas nulas.", "Ordenar por receita decrescente, desempatar por sk_movie_id e retornar até dez filmes."],
+    "reference_sql": "SELECT m.titulo, p.receita_usd FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.receita_usd IS NOT NULL ORDER BY p.receita_usd DESC, m.sk_movie_id LIMIT 10"
+  },
+  {
+    "id": "lucro_medio_genero",
+    "category": "financas",
+    "question": "Qual é o lucro médio em USD por gênero, considerando somente filmes com receita e orçamento informados?",
+    "criteria": ["Lucro = receita_usd - orcamento_usd, sem preencher NULL com zero.", "Usar a ponte de gêneros sem duplicar um filme dentro do mesmo gênero."],
+    "reference_sql": "SELECT g.nome_genero, AVG(p.receita_usd - p.orcamento_usd) AS lucro_medio_usd FROM dim_genres AS g JOIN bridge_movie_genre AS b ON b.sk_genre_id = g.sk_genre_id JOIN fact_movies_performance AS p ON p.sk_movie_id = b.sk_movie_id WHERE p.receita_usd IS NOT NULL AND p.orcamento_usd IS NOT NULL GROUP BY g.sk_genre_id, g.nome_genero ORDER BY lucro_medio_usd DESC, g.sk_genre_id"
+  },
+  {
+    "id": "top_margem",
+    "category": "financas",
+    "question": "Quais são os dez filmes com maior margem percentual de lucro sobre orçamento, com receita informada e orçamento positivo, em USD?",
+    "criteria": ["Calcular 100.0 * (receita - orçamento) / NULLIF(orçamento, 0).", "Excluir receita nula e orçamento nulo, zero ou negativo."],
+    "reference_sql": "SELECT m.titulo, 100.0 * (p.receita_usd - p.orcamento_usd) / NULLIF(p.orcamento_usd, 0) AS margem_percentual FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.receita_usd IS NOT NULL AND p.orcamento_usd > 0 ORDER BY margem_percentual DESC, m.sk_movie_id LIMIT 10"
+  },
+  {
+    "id": "top_popularidade",
+    "category": "popularidade",
+    "question": "Quais são os cinco filmes mais populares?",
+    "criteria": ["Usar popularidade, sem substituir por nota ou quantidade de avaliações.", "Excluir popularidade nula e desempatar pela chave do filme."],
+    "reference_sql": "SELECT m.titulo, p.popularidade FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.popularidade IS NOT NULL ORDER BY p.popularidade DESC, m.sk_movie_id LIMIT 5"
+  },
+  {
+    "id": "divergencia_tmdb_imdb",
+    "category": "engajamento",
+    "question": "Quais são os dez filmes com maior diferença absoluta entre as notas TMDB e IMDb?",
+    "criteria": ["Usar ABS(nota_tmdb - nota_imdb), com ambas as notas informadas.", "Preservar as duas notas e a diferença para conferência."],
+    "reference_sql": "SELECT m.titulo, p.nota_tmdb, p.nota_imdb, ABS(p.nota_tmdb - p.nota_imdb) AS diferenca FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.nota_tmdb IS NOT NULL AND p.nota_imdb IS NOT NULL ORDER BY diferenca DESC, m.sk_movie_id LIMIT 10"
+  },
+  {
+    "id": "imdb_por_ano",
+    "category": "engajamento",
+    "question": "Qual é a nota média IMDb por ano de lançamento, em ordem de ano?",
+    "criteria": ["Excluir ano e nota IMDb nulos.", "Agregar antes de aplicar qualquer limite de saída."],
+    "reference_sql": "SELECT m.ano_lancamento, AVG(p.nota_imdb) AS nota_media_imdb FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE m.ano_lancamento IS NOT NULL AND p.nota_imdb IS NOT NULL GROUP BY m.ano_lancamento ORDER BY m.ano_lancamento"
+  },
+  {
+    "id": "ator_ultimos_cinco_anos",
+    "category": "elenco",
+    "question": "Qual ator participou de mais filmes lançados nos últimos cinco anos?",
+    "reference_date": "2026-10-04",
+    "criteria": ["Filtrar tipo_pessoa = Ator.", "Usar janela móvel inclusiva entre a referência menos cinco anos e a referência, excluindo datas nulas e futuras.", "Contar filmes distintos; desempatar por sk_person_id."],
+    "reference_sql": "WITH recentes AS MATERIALIZED (SELECT sk_movie_id FROM dim_movies WHERE data_lancamento BETWEEN date('{reference_date}', '-5 years') AND '{reference_date}'), atores AS MATERIALIZED (SELECT sk_person_id FROM dim_people WHERE tipo_pessoa = 'Ator'), participacoes AS (SELECT b.sk_person_id, COUNT(DISTINCT b.sk_movie_id) AS total_filmes FROM recentes AS m JOIN bridge_movie_person AS b ON b.sk_movie_id = m.sk_movie_id JOIN atores AS a ON a.sk_person_id = b.sk_person_id GROUP BY b.sk_person_id ORDER BY total_filmes DESC, b.sk_person_id LIMIT 1) SELECT p.nome_pessoa, t.total_filmes FROM participacoes AS t JOIN dim_people AS p ON p.sk_person_id = t.sk_person_id"
+  },
+  {
+    "id": "diretores_nota_minimo_cinco",
+    "category": "equipe",
+    "question": "Quais são os dez diretores com maior nota média IMDb, considerando pelo menos cinco filmes com nota IMDb informada?",
+    "criteria": ["Filtrar tipo_pessoa = Diretor e notas IMDb não nulas.", "HAVING COUNT(DISTINCT filme) >= 5 deve contar somente filmes avaliados.", "Calcular a média por diretor, sem combinar avaliações individuais."],
+    "reference_sql": "SELECT d.nome_pessoa, COUNT(DISTINCT b.sk_movie_id) AS filmes_avaliados, AVG(p.nota_imdb) AS nota_media_imdb FROM dim_people AS d JOIN bridge_movie_person AS b ON b.sk_person_id = d.sk_person_id JOIN fact_movies_performance AS p ON p.sk_movie_id = b.sk_movie_id WHERE d.tipo_pessoa = 'Diretor' AND p.nota_imdb IS NOT NULL GROUP BY d.sk_person_id, d.nome_pessoa HAVING COUNT(DISTINCT b.sk_movie_id) >= 5 ORDER BY nota_media_imdb DESC, d.sk_person_id LIMIT 10"
+  },
+  {
+    "id": "dupla_ator_diretor",
+    "category": "elenco_equipe",
+    "question": "Qual dupla de ator e diretor trabalhou junta em mais filmes?",
+    "criteria": ["Ligar duas participações pelo mesmo sk_movie_id e filtrar os papéis na dimensão de pessoas.", "Agrupar pela identidade dos dois participantes, sem juntar homônimos.", "Uma participação por filme/pessoa é garantida pela PK composta da ponte."],
+    "reference_sql": "WITH atores AS MATERIALIZED (SELECT b.sk_movie_id, b.sk_person_id FROM bridge_movie_person AS b JOIN dim_people AS p ON p.sk_person_id = b.sk_person_id WHERE p.tipo_pessoa = 'Ator'), diretores AS MATERIALIZED (SELECT b.sk_movie_id, b.sk_person_id FROM bridge_movie_person AS b JOIN dim_people AS p ON p.sk_person_id = b.sk_person_id WHERE p.tipo_pessoa = 'Diretor'), pares AS (SELECT a.sk_person_id AS ator_id, d.sk_person_id AS diretor_id, COUNT(*) AS total_filmes FROM atores AS a JOIN diretores AS d ON d.sk_movie_id = a.sk_movie_id GROUP BY a.sk_person_id, d.sk_person_id ORDER BY total_filmes DESC, a.sk_person_id, d.sk_person_id LIMIT 1) SELECT ap.nome_pessoa AS ator, dp.nome_pessoa AS diretor, pares.total_filmes FROM pares JOIN dim_people AS ap ON ap.sk_person_id = pares.ator_id JOIN dim_people AS dp ON dp.sk_person_id = pares.diretor_id"
+  },
+  {
+    "id": "filmes_por_genero",
+    "category": "generos",
+    "question": "Quantos filmes existem por gênero, incluindo gêneros sem filmes?",
+    "criteria": ["Usar LEFT JOIN e COUNT(DISTINCT b.sk_movie_id), não COUNT(*).", "Não juntar outras pontes, evitando multiplicar a contagem."],
+    "reference_sql": "SELECT g.nome_genero, COUNT(DISTINCT b.sk_movie_id) AS total_filmes FROM dim_genres AS g LEFT JOIN bridge_movie_genre AS b ON b.sk_genre_id = g.sk_genre_id GROUP BY g.sk_genre_id, g.nome_genero ORDER BY total_filmes DESC, g.sk_genre_id"
+  },
+  {
+    "id": "produtora_maior_lucro",
+    "category": "produtoras",
+    "question": "Qual produtora tem o maior lucro total em USD, considerando filmes com receita e orçamento informados?",
+    "criteria": ["Somar receita_usd - orcamento_usd por produtora.", "Um filme com várias produtoras contribui integralmente para cada produtora; não atribuir percentuais inexistentes."],
+    "reference_sql": "SELECT c.nome_produtora, SUM(p.receita_usd - p.orcamento_usd) AS lucro_total_usd FROM dim_companies AS c JOIN bridge_movie_company AS b ON b.sk_company_id = c.sk_company_id JOIN fact_movies_performance AS p ON p.sk_movie_id = b.sk_movie_id WHERE p.receita_usd IS NOT NULL AND p.orcamento_usd IS NOT NULL GROUP BY c.sk_company_id, c.nome_produtora ORDER BY lucro_total_usd DESC, c.sk_company_id LIMIT 1"
+  },
+  {
+    "id": "genero_maior_margem",
+    "category": "generos",
+    "question": "Qual gênero tem a maior margem percentual média de lucro sobre orçamento em USD, entre filmes com receita informada e orçamento positivo?",
+    "criteria": ["Calcular a média das margens individuais, não a margem do total agregado.", "Usar a mesma definição percentual sobre orçamento adotada pelo agente."],
+    "reference_sql": "SELECT g.nome_genero, AVG(100.0 * (p.receita_usd - p.orcamento_usd) / NULLIF(p.orcamento_usd, 0)) AS margem_media_percentual FROM dim_genres AS g JOIN bridge_movie_genre AS b ON b.sk_genre_id = g.sk_genre_id JOIN fact_movies_performance AS p ON p.sk_movie_id = b.sk_movie_id WHERE p.receita_usd IS NOT NULL AND p.orcamento_usd > 0 GROUP BY g.sk_genre_id, g.nome_genero ORDER BY margem_media_percentual DESC, g.sk_genre_id LIMIT 1"
+  },
+  {
+    "id": "mais_avaliados_usuarios",
+    "category": "avaliacoes",
+    "question": "Quais são os dez filmes mais avaliados pelos usuários, usando a quantidade agregada de avaliações?",
+    "criteria": ["Usar dim_reviews.qtd_avaliacoes_usuarios; não contar linhas de movie_reviews.", "Não somar quantidades de linhas agregadas com as de avaliações individuais."],
+    "reference_sql": "SELECT m.titulo, r.qtd_avaliacoes_usuarios FROM dim_movies AS m JOIN dim_reviews AS r ON r.sk_movie_id = m.sk_movie_id WHERE r.qtd_avaliacoes_usuarios IS NOT NULL ORDER BY r.qtd_avaliacoes_usuarios DESC, m.sk_movie_id, r.sk_review_id LIMIT 10"
+  },
+  {
+    "id": "divergencia_usuarios_imdb",
+    "category": "avaliacoes",
+    "question": "Quais são os dez filmes com maior diferença absoluta entre nota média dos usuários e nota IMDb?",
+    "criteria": ["Usar nota_media_usuarios de dim_reviews e nota_imdb de fact_movies_performance.", "Excluir notas nulas e preservar a escala observada de 0 a 10."],
+    "reference_sql": "SELECT m.titulo, r.nota_media_usuarios, p.nota_imdb, ABS(r.nota_media_usuarios - p.nota_imdb) AS diferenca FROM dim_movies AS m JOIN dim_reviews AS r ON r.sk_movie_id = m.sk_movie_id JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE r.nota_media_usuarios IS NOT NULL AND p.nota_imdb IS NOT NULL ORDER BY diferenca DESC, m.sk_movie_id, r.sk_review_id LIMIT 10"
+  },
+  {
+    "id": "ano_maior_receita",
+    "category": "generalizacao",
+    "question": "Qual ano de lançamento tem a maior receita total em USD?",
+    "criteria": ["Excluir ano e receita nulos.", "Somar por ano antes de ordenar e retornar o primeiro."],
+    "reference_sql": "SELECT m.ano_lancamento, SUM(p.receita_usd) AS receita_total_usd FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE m.ano_lancamento IS NOT NULL AND p.receita_usd IS NOT NULL GROUP BY m.ano_lancamento ORDER BY receita_total_usd DESC, m.ano_lancamento LIMIT 1"
+  },
+  {
+    "id": "generos_nota_imdb",
+    "category": "generalizacao",
+    "question": "Quais são os cinco gêneros com maior nota média IMDb?",
+    "criteria": ["Excluir notas IMDb nulas e calcular a média por gênero.", "Não ponderar por quantidade de avaliações, pois a pergunta não solicita ponderação."],
+    "reference_sql": "SELECT g.nome_genero, AVG(p.nota_imdb) AS nota_media_imdb FROM dim_genres AS g JOIN bridge_movie_genre AS b ON b.sk_genre_id = g.sk_genre_id JOIN fact_movies_performance AS p ON p.sk_movie_id = b.sk_movie_id WHERE p.nota_imdb IS NOT NULL GROUP BY g.sk_genre_id, g.nome_genero ORDER BY nota_media_imdb DESC, g.sk_genre_id LIMIT 5"
+  },
+  {
+    "id": "diretores_mais_filmes",
+    "category": "generalizacao",
+    "question": "Quais são os cinco diretores com mais filmes?",
+    "criteria": ["Filtrar tipo_pessoa = Diretor.", "Contar filmes distintos por identidade, sem agrupar somente pelo nome."],
+    "reference_sql": "SELECT d.nome_pessoa, COUNT(DISTINCT b.sk_movie_id) AS total_filmes FROM dim_people AS d JOIN bridge_movie_person AS b ON b.sk_person_id = d.sk_person_id WHERE d.tipo_pessoa = 'Diretor' GROUP BY d.sk_person_id, d.nome_pessoa ORDER BY total_filmes DESC, d.sk_person_id LIMIT 5"
+  },
+  {
+    "id": "produtoras_mais_filmes",
+    "category": "generalizacao",
+    "question": "Quais são as cinco produtoras com mais filmes?",
+    "criteria": ["Contar filmes distintos por sk_company_id.", "Não misturar produtoras homônimas."],
+    "reference_sql": "SELECT c.nome_produtora, COUNT(DISTINCT b.sk_movie_id) AS total_filmes FROM dim_companies AS c JOIN bridge_movie_company AS b ON b.sk_company_id = c.sk_company_id GROUP BY c.sk_company_id, c.nome_produtora ORDER BY total_filmes DESC, c.sk_company_id LIMIT 5"
+  },
+  {
+    "id": "orcamento_alto_receita_baixa",
+    "category": "generalizacao",
+    "question": "Quais são os dez filmes com orçamento de pelo menos USD 100 milhões e receita menor que metade do orçamento? Ordene pelo maior orçamento.",
+    "criteria": ["Definir orçamento alto com limiar explícito de 100 milhões USD.", "Exigir receita não nula e receita < 0.5 * orçamento, sem tratar receita ausente como baixa."],
+    "reference_sql": "SELECT m.titulo, p.orcamento_usd, p.receita_usd FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.orcamento_usd >= 100000000 AND p.receita_usd IS NOT NULL AND p.receita_usd < 0.5 * p.orcamento_usd ORDER BY p.orcamento_usd DESC, m.sk_movie_id LIMIT 10"
+  },
+  {
+    "id": "sinonimo_bilheteria",
+    "category": "sinonimos",
+    "question": "Quais são os dez filmes com maior bilheteria em USD?",
+    "criteria": ["Interpretar bilheteria como receita_usd.", "O resultado deve coincidir com top_receita, usando a mesma ordenação."],
+    "reference_sql": "SELECT m.titulo, p.receita_usd FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.receita_usd IS NOT NULL ORDER BY p.receita_usd DESC, m.sk_movie_id LIMIT 10"
+  },
+  {
+    "id": "sinonimo_faturamento",
+    "category": "sinonimos",
+    "question": "Quais são os dez filmes com maior faturamento em USD?",
+    "criteria": ["Interpretar faturamento como receita_usd.", "O resultado deve coincidir com top_receita, usando a mesma ordenação."],
+    "reference_sql": "SELECT m.titulo, p.receita_usd FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.receita_usd IS NOT NULL ORDER BY p.receita_usd DESC, m.sk_movie_id LIMIT 10"
+  }
+]

@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a introspecção de tabelas, colunas e chaves e a representação textual do esquema para o modelo, com testes automatizados. O agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados e a representação textual do esquema para o modelo, com testes automatizados. O agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -94,7 +94,7 @@ Com o ambiente virtual ativo, execute:
 python scripts/inspect_database.py
 ```
 
-O script abre o `cinerocket.db` da raiz do projeto em modo somente leitura e mostra tabelas, colunas, tipos declarados, valores padrão, chaves primárias e chaves estrangeiras. Para outro arquivo:
+O script abre o `cinerocket.db` da raiz do projeto em modo somente leitura e mostra tabelas, colunas, tipos declarados, valores padrão, chaves primárias, chaves estrangeiras, contagens e pequenas amostras. Para outro arquivo:
 
 ```bash
 python scripts/inspect_database.py --database "caminho/do/banco.db"
@@ -108,7 +108,22 @@ O indicador `NOT NULL declarado` reproduz o metadado do SQLite; ele não infere 
 
 No banco da atividade, as três tabelas `bridge_movie_*` ligam filmes a gêneros, pessoas e produtoras. `fact_movies_performance`, `dim_reviews` e `movie_reviews` referenciam `dim_movies` por `sk_movie_id`. Esses relacionamentos são extraídos das FKs declaradas no arquivo.
 
-Contagens e amostras serão acrescentadas nas próximas etapas. O parâmetro `--database` escolhe o arquivo; o script ainda não lê `DATABASE_PATH` do `.env`.
+Por padrão, a inspeção conta todos os registros e mostra até três linhas por tabela, ordenadas pela PK quando disponível. Textos acima de 160 caracteres são truncados com `...` antes de chegar ao Python. BLOBs aparecem apenas com seu tamanho, sem expor o conteúdo binário. Esses resultados são diagnósticos locais e não integram o contexto do modelo.
+
+```bash
+# Somente esquema, sem contagens nem leitura de amostras
+python scripts/inspect_database.py --schema-only
+
+# Contagens sem amostras
+python scripts/inspect_database.py --sample-rows 0
+
+# Cinco linhas por tabela, com textos limitados a 100 caracteres
+python scripts/inspect_database.py --sample-rows 5 --max-cell-chars 100
+```
+
+O limite máximo é de dez linhas por tabela e mil caracteres por texto. Contagens são exatas e podem custar mais tempo em bancos grandes; use `--schema-only` para evitá-las. Os modos `--schema-only` e `--llm-context` são mutuamente exclusivos. O parâmetro `--database` escolhe o arquivo; o script ainda não lê `DATABASE_PATH` do `.env`.
+
+As contagens, os papéis das pessoas e as faixas de notas observados no banco fornecido estão registrados em [docs/database.md](docs/database.md).
 
 ## Contexto do esquema para o modelo
 
@@ -136,4 +151,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção e contexto JSON. Há casos para PK/FK compostas, colunas geradas, referências implícitas e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas. Eles não dependem do banco da atividade nem de chave OpenRouter.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas e contexto JSON. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas. Eles não dependem do banco da atividade nem de chave OpenRouter.

@@ -1,17 +1,25 @@
 """Inspecione o esquema do SQLite local sem depender do OpenRouter."""
 
 import argparse
+import json
 from pathlib import Path
 
 from cinedata.database import readonly_connection
 from cinedata.exceptions import CineDataError
+from cinedata.inspection import (
+    DEFAULT_CELL_CHARS,
+    DEFAULT_SAMPLE_ROWS,
+    MAX_CELL_CHARS,
+    MAX_SAMPLE_ROWS,
+    inspect_table_data,
+)
 from cinedata.schema import format_schema_for_llm, inspect_schema
 
 
 def main(argv: list[str] | None = None) -> int:
     """Mostre o esquema real do arquivo e retorne o código de saída."""
     parser = argparse.ArgumentParser(
-        description="Mostra tabelas, colunas e chaves do SQLite em somente leitura."
+        description="Mostra esquema, contagens e amostras do SQLite em leitura."
     )
     parser.add_argument(
         "--database",
@@ -19,16 +27,48 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parents[1] / "cinerocket.db",
         help="Caminho do banco. Padrão: cinerocket.db na raiz do projeto.",
     )
-    parser.add_argument(
+    output_options = parser.add_mutually_exclusive_group()
+    output_options.add_argument(
         "--llm-context",
         action="store_true",
         help="Mostra somente o JSON compacto do esquema destinado ao modelo.",
     )
+    output_options.add_argument(
+        "--schema-only",
+        action="store_true",
+        help="Mostra o esquema sem executar contagens ou ler amostras.",
+    )
+    parser.add_argument(
+        "--sample-rows",
+        type=int,
+        default=DEFAULT_SAMPLE_ROWS,
+        help=f"Linhas por tabela: 0 a {MAX_SAMPLE_ROWS} (padrão: 3).",
+    )
+    parser.add_argument(
+        "--max-cell-chars",
+        type=int,
+        default=DEFAULT_CELL_CHARS,
+        help=f"Caracteres por texto: 1 a {MAX_CELL_CHARS} (padrão: 160).",
+    )
     args = parser.parse_args(argv)
+    if not 0 <= args.sample_rows <= MAX_SAMPLE_ROWS:
+        parser.error(f"--sample-rows deve ser de 0 a {MAX_SAMPLE_ROWS}.")
+    if not 1 <= args.max_cell_chars <= MAX_CELL_CHARS:
+        parser.error(f"--max-cell-chars deve ser de 1 a {MAX_CELL_CHARS}.")
 
     try:
         with readonly_connection(args.database) as connection:
             tables = inspect_schema(connection)
+            previews = {}
+            if not args.llm_context and not args.schema_only:
+                previews = {
+                    table.name: inspect_table_data(
+                        connection, table.name,
+                        sample_rows=args.sample_rows,
+                        max_cell_chars=args.max_cell_chars,
+                    )
+                    for table in tables
+                }
     except CineDataError as exc:
         parser.exit(status=1, message=f"Erro: {exc}\n")
 
@@ -65,6 +105,18 @@ def main(argv: list[str] | None = None) -> int:
                 f"    ON UPDATE {foreign_key.on_update}; "
                 f"ON DELETE {foreign_key.on_delete}"
             )
+        if table.name in previews:
+            preview = previews[table.name]
+            print(f"  Registros: {preview.row_count}")
+            if preview.rows:
+                label = "linha" if len(preview.rows) == 1 else "linhas"
+                print(f"  Amostra ({len(preview.rows)} {label}):")
+                for row in preview.rows:
+                    print("    " + json.dumps(
+                        dict(zip(preview.columns, row)), ensure_ascii=False,
+                    ))
+            elif args.sample_rows:
+                print("  Nenhuma linha disponível para amostra.")
     if not tables:
         print("Nenhuma tabela de aplicação foi encontrada.")
     return 0

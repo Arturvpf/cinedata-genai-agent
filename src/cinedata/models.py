@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 
 
+SQLiteValue = str | int | float | bytes | None
+
+
 @dataclass(frozen=True)
 class ColumnSchema:
     """Coluna conforme o PRAGMA table_xinfo, sem inferir tipos ou restrições."""
@@ -44,3 +47,12 @@ class TableSchema:
             column.name
             for column in sorted(columns, key=lambda item: item.primary_key_position)
         )
+
+
+@dataclass(frozen=True)
+class TablePreview:
+    """Contagem exata e pequena amostra para o diagnóstico local."""
+
+    row_count: int
+    columns: tuple[str, ...]
+    rows: tuple[tuple[SQLiteValue, ...], ...]

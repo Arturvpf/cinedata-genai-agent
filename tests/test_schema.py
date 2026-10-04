@@ -1,13 +1,19 @@
 """Testes da introspecção usando bancos SQLite temporários."""
 
 from pathlib import Path
+import json
 import sqlite3
 
 import pytest
 
 from cinedata.database import readonly_connection
 from cinedata.exceptions import SchemaInspectionError
-from cinedata.schema import inspect_schema, inspect_table, list_tables
+from cinedata.schema import (
+    format_schema_for_llm,
+    inspect_schema,
+    inspect_table,
+    list_tables,
+)
 
 
 def test_lists_real_tables_in_order_and_excludes_internal_objects(
@@ -205,3 +211,71 @@ def test_inspection_error_on_closed_connection() -> None:
     with pytest.raises(SchemaInspectionError, match="inspecionar a tabela") as error:
         inspect_table(connection, "child")
     assert isinstance(error.value.__cause__, sqlite3.ProgrammingError)
+
+
+def test_llm_context_preserves_types_names_and_composite_keys(
+    metadata_database: Path,
+) -> None:
+    with readonly_connection(metadata_database) as connection:
+        schema = inspect_schema(connection)
+    context = format_schema_for_llm(schema)
+    payload = json.loads(context)
+    assert payload["dialect"] == "SQLite"
+    tables = {table["name"]: table for table in payload["tables"]}
+    assert tables['odd " table; --']["columns"][0]["name"] == "titulo"
+    assert tables["parent"]["primary_key"] == ["second", "first"]
+    child_keys = tables["child"]["foreign_keys"]
+    key = next(key for key in child_keys if key["target_table"] == "parent")
+    assert key["source_columns"] == ["second", "first"]
+    assert key["target_columns"] == ["second", "first"]
+    implicit_key = tables["implicit_child"]["foreign_keys"][0]
+    assert implicit_key["target_columns"] == [None, None]
+    columns = {column["name"]: column for column in tables["child"]["columns"]}
+    assert columns["second"]["type"] == "TEXT"
+    assert columns["second"]["not_null"] is True
+    assert columns["label"]["hidden"] == 2
+    assert columns["note"]["type"] == ""
+
+
+def test_llm_context_excludes_control_table_by_default(
+    metadata_database: Path,
+) -> None:
+    connection = sqlite3.connect(metadata_database)
+    try:
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT)")
+        connection.commit()
+    finally:
+        connection.close()
+    with readonly_connection(metadata_database) as connection:
+        schema = inspect_schema(connection)
+    default = json.loads(format_schema_for_llm(schema))
+    assert "alembic_version" not in {table["name"] for table in default["tables"]}
+    complete = json.loads(format_schema_for_llm(schema, excluded_tables=()))
+    assert "alembic_version" in {table["name"] for table in complete["tables"]}
+
+
+def test_llm_context_does_not_include_data_rows(metadata_database: Path) -> None:
+    marker = "private-user-review-marker"
+    connection = sqlite3.connect(metadata_database)
+    try:
+        connection.execute("INSERT INTO child (id, note) VALUES (?, ?)", (1, marker))
+        connection.commit()
+    finally:
+        connection.close()
+    with readonly_connection(metadata_database) as connection:
+        schema = inspect_schema(connection)
+    assert marker not in format_schema_for_llm(schema)
+
+
+def test_llm_context_is_stable_when_input_order_changes(
+    metadata_database: Path,
+) -> None:
+    with readonly_connection(metadata_database) as connection:
+        schema = inspect_schema(connection)
+    assert format_schema_for_llm(schema) == format_schema_for_llm(schema[::-1])
+
+
+def test_empty_llm_context_remains_valid_json() -> None:
+    assert json.loads(format_schema_for_llm(())) == {
+        "dialect": "SQLite", "tables": []
+    }

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from cinedata.database import readonly_connection
 from cinedata.exceptions import CineDataError
-from cinedata.schema import inspect_schema
+from cinedata.schema import format_schema_for_llm, inspect_schema
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,6 +19,11 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parents[1] / "cinerocket.db",
         help="Caminho do banco. Padrão: cinerocket.db na raiz do projeto.",
     )
+    parser.add_argument(
+        "--llm-context",
+        action="store_true",
+        help="Mostra somente o JSON compacto do esquema destinado ao modelo.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -26,6 +31,10 @@ def main(argv: list[str] | None = None) -> int:
             tables = inspect_schema(connection)
     except CineDataError as exc:
         parser.exit(status=1, message=f"Erro: {exc}\n")
+
+    if args.llm_context:
+        print(format_schema_for_llm(tables))
+        return 0
 
     print(f"Tabelas encontradas: {len(tables)}")
     for table in tables:

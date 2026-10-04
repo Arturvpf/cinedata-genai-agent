@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura e a introspecção reutilizável de tabelas, colunas e chaves, com testes automatizados. O contexto textual para o modelo, o agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a introspecção de tabelas, colunas e chaves e a representação textual do esquema para o modelo, com testes automatizados. O agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -110,6 +110,18 @@ No banco da atividade, as três tabelas `bridge_movie_*` ligam filmes a gêneros
 
 Contagens e amostras serão acrescentadas nas próximas etapas. O parâmetro `--database` escolhe o arquivo; o script ainda não lê `DATABASE_PATH` do `.env`.
 
+## Contexto do esquema para o modelo
+
+Para visualizar a representação que será utilizada na geração de SQL:
+
+```bash
+python scripts/inspect_database.py --llm-context
+```
+
+A função `format_schema_for_llm` recebe os metadados já coletados e produz JSON compacto com dialeto SQLite, nomes, tipos, indicadores de `NOT NULL`, colunas ocultas/geradas, PKs e FKs. Ela não consulta o banco nem inclui linhas dos dados. O JSON preserva nomes com aspas e outros caracteres especiais. Em FKs implícitas, `null` representa uma referência à PK da tabela de destino, disponível no mesmo esquema.
+
+A inspeção normal preserva `alembic_version`; o contexto para o modelo exclui essa tabela de controle por padrão. O contexto do banco da atividade contém as dez tabelas de dados. No código, o parâmetro `excluded_tables` permite alterar as exclusões. As tabelas são ordenadas para que o contexto permaneça estável e possa ser reutilizado em memória pelo agente.
+
 ## Testes
 
 Com o ambiente virtual ativo, execute:
@@ -124,4 +136,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão e introspecção. Há casos para PK/FK compostas, colunas geradas, referências implícitas e nomes de tabela contendo aspas e pontuação SQL. Eles não dependem do banco da atividade nem de chave OpenRouter.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção e contexto JSON. Há casos para PK/FK compostas, colunas geradas, referências implícitas e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas. Eles não dependem do banco da atividade nem de chave OpenRouter.

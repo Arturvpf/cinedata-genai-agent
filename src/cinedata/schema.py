@@ -1,6 +1,8 @@
 """Introspecção da estrutura real do banco SQLite."""
 
+from collections.abc import Collection, Sequence
 from contextlib import closing
+import json
 import sqlite3
 
 from cinedata.exceptions import SchemaInspectionError
@@ -94,3 +96,47 @@ def inspect_table(connection: sqlite3.Connection, table_name: str) -> TableSchem
 def inspect_schema(connection: sqlite3.Connection) -> tuple[TableSchema, ...]:
     """Colete o esquema real das tabelas, sem ler linhas dos dados."""
     return tuple(inspect_table(connection, name) for name in list_tables(connection))
+
+
+def format_schema_for_llm(
+    schema: Sequence[TableSchema],
+    *,
+    excluded_tables: Collection[str] = ("alembic_version",),
+) -> str:
+    """Gere JSON compacto com os metadados para consultas de leitura.
+
+    Não inclui linhas, valores padrão ou comandos de criação. Nomes especiais
+    são escapados pelo JSON. None em target_columns indica uma referência
+    à PK da tabela de destino; as PKs estão presentes no mesmo contexto.
+    A exclusão da tabela de migração pode ser alterada pelo chamador.
+    """
+    tables = []
+    for table in sorted(schema, key=lambda item: item.name):
+        if table.name in excluded_tables:
+            continue
+        tables.append({
+            "name": table.name,
+            "columns": [
+                {
+                    "name": column.name,
+                    "type": column.declared_type,
+                    "not_null": column.not_null,
+                    "hidden": column.hidden,
+                }
+                for column in table.columns
+            ],
+            "primary_key": table.primary_key,
+            "foreign_keys": [
+                {
+                    "source_columns": key.source_columns,
+                    "target_table": key.target_table,
+                    "target_columns": key.target_columns,
+                }
+                for key in table.foreign_keys
+            ],
+        })
+    return json.dumps(
+        {"dialect": "SQLite", "tables": tables},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )

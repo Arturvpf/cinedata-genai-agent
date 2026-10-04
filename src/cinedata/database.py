@@ -29,6 +29,11 @@ MAX_RESULT_BYTES = 1_000_000
 MAX_QUERY_COLUMNS = 100
 MAX_SQL_BYTES = 80_000  # Até 20 mil caracteres UTF-8 de quatro bytes.
 PROGRESS_INTERVAL = 1_000
+_RESOURCE_LIMIT_MESSAGES = frozenset({
+    "too many columns in result set",
+    "too many terms in compound SELECT",
+    "parser stack overflow",
+})
 
 
 @contextmanager
@@ -163,9 +168,13 @@ def execute_readonly(
                 raise QueryTimeoutError(
                     "A consulta excedeu o tempo permitido."
                 ) from exc
-            if code == sqlite3.SQLITE_TOOBIG:
+            if (
+                code == sqlite3.SQLITE_TOOBIG
+                or str(exc) in _RESOURCE_LIMIT_MESSAGES
+                or str(exc).startswith("Expression tree is too large")
+            ):
                 raise QueryLimitError(
-                    "Um valor da consulta excedeu o limite de tamanho permitido."
+                    "A consulta excedeu um limite de tamanho ou complexidade."
                 ) from exc
             recoverable = code == sqlite3.SQLITE_ERROR
             message = (

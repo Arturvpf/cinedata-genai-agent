@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter e o agente com geração e execução de SQL, com testes automatizados. A recuperação de erros, a resposta final e a CLI serão adicionadas nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter e o agente com geração, execução e correção única de SQL, com testes automatizados. A resposta final em linguagem natural e a CLI serão adicionadas nos próximos passos.
 
 ## Banco de dados local
 
@@ -117,7 +117,7 @@ except CineDataError as error:
     print(error)
 ```
 
-Cada `complete` realiza uma única tentativa. O SDK recebe `max_retries=0`: falhas de rede, HTTP 429 e erros do provedor não provocam repetições automáticas. Não há troca automática de modelo. A futura correção de SQL será uma operação separada do agente, limitada a uma tentativa.
+Cada `complete` realiza uma única tentativa. O SDK recebe `max_retries=0`: falhas de rede, HTTP 429 e erros do provedor não provocam repetições automáticas. Não há troca automática de modelo. A correção de SQL é uma operação separada do agente, limitada a uma tentativa.
 
 O timeout de rede padrão é de trinta segundos; `timeout_seconds` aceita valores maiores que zero e até cento e vinte segundos. Esse timeout controla as operações de rede do SDK e não representa um prazo total para toda a geração. A chamada usa `max_tokens=2048` por padrão, configurável entre um e 8192 tokens. O cliente aceita até cem mil caracteres no conjunto dos prompts e até cinquenta mil caracteres na resposta textual. A validação de SQL mantém seu limite próprio de vinte mil caracteres.
 
@@ -280,7 +280,7 @@ Os logs dessa etapa registram inicialização, geração e rejeições, sem regi
 
 O método `CineDataAgent.query` conecta a geração ao executor protegido: `pergunta → modelo → extração → guardrails → SQLite → resultado`. Ele usa as tabelas do mesmo esquema enviado ao modelo e abre uma conexão exclusiva de execução em modo somente leitura, com autorizador e limites de recursos. A criação do agente continua fazendo apenas a introspecção local, sem chamada ao modelo.
 
-O exemplo abaixo faz **uma chamada real ao modelo** e executa a consulta gerada no banco local. Não há chamada adicional para redigir uma resposta em linguagem natural nesta etapa.
+O exemplo abaixo faz **uma chamada real ao modelo** e executa a consulta gerada no banco local. Se ocorrer um erro recuperável de SQL, pode haver mais uma chamada para correção. Não há chamada adicional para redigir uma resposta em linguagem natural nesta etapa.
 
 ```python
 from cinedata.agent import CineDataAgent
@@ -306,15 +306,29 @@ try:
             print("Nenhum resultado foi encontrado.")
         if result.truncated:
             print("Resultado parcial: há mais linhas do que o limite retornado.")
+        if result.correction_attempted:
+            print("Foi utilizada uma tentativa de correção do SQL.")
 except (CineDataError, ValueError) as error:
     print(error)
 ```
 
-O retorno `AgentResult` é imutável e acrescenta `question` aos campos do `QueryResult`: `sql`, `columns`, `rows`, `truncated` e `elapsed_seconds`. Esse tempo corresponde à execução e leitura da consulta SQLite, sem incluir a chamada ao modelo. Resultados vazios conservam os nomes das colunas, e resultados parciais mantêm o indicador do executor.
+O retorno `AgentResult` é imutável e acrescenta `question` e `correction_attempted` aos campos do `QueryResult`: `sql`, `columns`, `rows`, `truncated` e `elapsed_seconds`. O SQL retornado é o que produziu o resultado final. Esse tempo corresponde à execução e leitura da consulta SQLite final, sem incluir as chamadas ao modelo nem uma tentativa anterior que falhou. Resultados vazios conservam os nomes das colunas, e resultados parciais mantêm o indicador do executor.
 
 O limite padrão é de cem linhas e cinco segundos para a consulta. `max_rows` aceita de uma a mil linhas; `query_timeout_seconds` deve ser maior que zero e até sessenta segundos. O timeout é validado antes da geração para evitar consumir uma chamada com configuração inválida. Os limites de bytes e colunas do executor também se aplicam.
 
-Nesta etapa, `query` gera e executa uma vez. SQL inválido levanta `QueryExecutionError` com o diagnóstico do SQLite; escrita, acesso fora do esquema e funções não permitidas levantam `QueryBlockedError`; timeout e tamanho excedido mantêm seus erros específicos. Nenhuma falha provoca outra chamada ao modelo. A correção única de erros recuperáveis será adicionada na próxima etapa.
+`query` gera SQL e tenta executá-lo. Quando o executor informa um erro de SQL recuperável, o agente solicita uma única correção e tenta executar a nova consulta. Escrita, acesso fora do esquema e funções não permitidas levantam `QueryBlockedError`; timeout, limites de recursos e erros da API não provocam correção. Os detalhes estão na seção seguinte.
+
+## Correção única de SQL
+
+Erros recuperáveis do SQLite, como coluna ou tabela inexistente e erro de sintaxe, podem provocar uma chamada adicional ao modelo. `build_sql_correction_prompt`, em `src/cinedata/prompts.py`, envia a pergunta original, o mesmo esquema, os mesmos critérios e limites, o SQL que falhou e o diagnóstico SQLite como dados JSON. Não são enviadas linhas do banco para essa correção.
+
+A consulta corrigida passa novamente por `sanitize_sql`, `validate_sql` e pelo executor protegido, incluindo o autorizador, o modo de leitura e os limites de tempo, linhas, bytes e colunas. A segunda execução usa uma conexão nova. Se a correção também falhar, o erro é propagado: não há terceira chamada para gerar/corrigir SQL nem terceira execução. Resposta corrigida vazia, malformada ou bloqueada encerra o fluxo antes da segunda execução.
+
+O fluxo usa uma chamada de geração e, somente quando necessário, uma chamada de correção. Falhas de rede, autenticação, rate limit, configuração, banco indisponível, formato da resposta, segurança, timeout e tamanho/complexidade não provocam essa chamada adicional. Limites nativos de colunas, quantidade de termos em `UNION` e profundidade de expressões também são tratados como erros de recursos, sem correção automática.
+
+O diagnóstico enviado é limitado a dois mil caracteres, com um indicador de truncamento. O SQL anterior conserva seu limite de vinte mil caracteres. As duas mensagens da correção, juntas, não podem exceder cem mil caracteres; o construtor rejeita contexto maior antes da chamada. A data de referência é capturada uma vez por `query` e permanece a mesma na correção, inclusive se o processo atravessar a meia-noite.
+
+O prazo de execução se aplica separadamente a cada tentativa SQLite; não é um prazo total para as chamadas de rede e as duas execuções. `correction_attempted=True` no resultado indica que a correção foi utilizada; sucesso na primeira consulta deixa esse campo como `False`. A tentativa é registrada no log sem incluir a pergunta, o SQL, o diagnóstico bruto ou valores retornados.
 
 ## Guardrails para consultas
 
@@ -378,7 +392,7 @@ O prazo padrão é de cinco segundos, configurável com `timeout_seconds` maior 
 
 O executor reduz os [limites nativos do SQLite](https://www.sqlite.org/limits.html) para cem colunas, valores/linhas codificadas de até um milhão de bytes e SQL de até oitenta mil bytes, mantendo a validação de até vinte mil caracteres. O conteúdo das colunas e linhas retornadas também possui um orçamento de um milhão de bytes: textos são medidos em UTF-8, BLOBs pelo tamanho e números/`NULL` por uma estimativa de oito bytes. Ao exceder esse orçamento, o executor rejeita o resultado sem truncar valores individuais. Esses limites não representam um teto para toda a memória utilizada pelo processo.
 
-Bloqueios de segurança levantam `QueryBlockedError`; prazo excedido levanta `QueryTimeoutError`; tamanho excedido levanta `QueryLimitError`. Outros erros SQLite são convertidos em `QueryExecutionError`, com mensagem em português. Para erros de SQL, `recoverable=True` e `sqlite_error` preserva o diagnóstico para uma futura tentativa de correção. Timeout e excesso de tamanho não são recuperáveis. O executor não faz chamadas ao modelo nem repete consultas; a única tentativa de correção será implementada no agente. A conexão é fechada em todos os casos, e o log registra somente quantidade de linhas, indicador de resultado parcial e tempo, sem valores retornados.
+Bloqueios de segurança levantam `QueryBlockedError`; prazo excedido levanta `QueryTimeoutError`; tamanho ou complexidade excedida levanta `QueryLimitError`. Outros erros SQLite são convertidos em `QueryExecutionError`, com mensagem em português. Para erros de SQL, `recoverable=True` e `sqlite_error` preserva o diagnóstico para a correção única do agente. Timeout e limites de recursos não são recuperáveis. O executor não faz chamadas ao modelo nem repete consultas; a tentativa de correção é administrada pelo agente. A conexão é fechada em todos os casos, e o log registra somente quantidade de linhas, indicador de resultado parcial e tempo, sem valores retornados.
 
 ## Testes
 
@@ -394,4 +408,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Os testes do cliente usam o SDK real com transporte HTTP simulado para verificar requisições, autenticação, ausência de retries, erros de rede/HTTP, validação de respostas e fechamento do cliente. Os testes dos prompts verificam serialização, preservação de nomes/chaves, seleção das orientações conforme as colunas disponíveis e limites de entrada. Os testes do agente verificam coleta única do esquema, geração com uma chamada, rejeição de escrita e ausência de execução em `generate_sql`. Os testes do fluxo `query` combinam modelo simulado com SQLite real para verificar resultados, JOINs, agregações, limites e falhas sem novas chamadas ao modelo. Eles não dependem do banco da atividade nem de chave OpenRouter e não enviam chamadas reais à API.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Os testes do cliente usam o SDK real com transporte HTTP simulado para verificar requisições, autenticação, ausência de retries, erros de rede/HTTP, validação de respostas e fechamento do cliente. Os testes dos prompts verificam serialização, preservação de nomes/chaves, seleção das orientações conforme as colunas disponíveis e limites de entrada. Os testes do agente verificam coleta única do esquema, geração com uma chamada, rejeição de escrita e ausência de execução em `generate_sql`. Os testes do fluxo `query` combinam modelo simulado com SQLite real para verificar resultados, JOINs, agregações e limites. Os testes de correção verificam sucesso após erro de SQL, revalidação da nova consulta, limite de uma tentativa, contexto estável e ausência de correção para segurança, recursos e falhas da API. Eles não dependem do banco da atividade nem de chave OpenRouter e não enviam chamadas reais à API.

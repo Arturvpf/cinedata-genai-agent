@@ -18,15 +18,30 @@ from cinedata.exceptions import (
     InvalidModelResponseError,
     QueryBlockedError,
     QueryExecutionError,
+    QueryLimitError,
+    QueryTimeoutError,
     SchemaInspectionError,
 )
 from cinedata.guardrails import sanitize_sql, validate_sql
-from cinedata.models import AgentResult
-from cinedata.prompts import build_sql_prompt
+from cinedata.models import AgentResult, QueryResult
+from cinedata.prompts import build_sql_correction_prompt, build_sql_prompt
 from cinedata.schema import format_schema_for_llm, inspect_schema
 
 
 logger = logging.getLogger(__name__)
+
+
+def _validated_sql(response: str) -> str:
+    try:
+        sql = validate_sql(sanitize_sql(response))
+    except InvalidModelResponseError:
+        logger.warning("O modelo retornou uma resposta SQL inválida.")
+        raise
+    except QueryBlockedError:
+        logger.warning("Consulta gerada bloqueada pelos guardrails.")
+        raise
+    logger.info("SQL extraído e aprovado pela validação textual.")
+    return sql
 
 
 class TextCompletionClient(Protocol):
@@ -84,7 +99,9 @@ class CineDataAgent:
         """Tabelas do mesmo esquema enviado ao modelo, para o executor."""
         return self._allowed_tables
 
-    def generate_sql(self, question: str) -> str:
+    def generate_sql(
+        self, question: str, *, reference_date: date | None = None,
+    ) -> str:
         """Gere SQL com uma chamada, extraia a resposta e aplique os guardrails.
 
         A validação é textual; sintaxe completa e permissões de acesso serão
@@ -92,29 +109,20 @@ class CineDataAgent:
         executa SQL, não pede correção e não gera resposta em linguagem natural.
         """
         messages = build_sql_prompt(
-            question, self._schema_context, reference_date=self.reference_date,
+            question, self._schema_context,
+            reference_date=(
+                self.reference_date if reference_date is None else reference_date
+            ),
             max_rows=self.max_rows,
         )
         logger.info("Iniciando geração de SQL.")
         response = self._client.complete(messages.system, messages.user)
-        try:
-            sql = validate_sql(sanitize_sql(response))
-        except InvalidModelResponseError:
-            logger.warning("O modelo retornou uma resposta SQL inválida.")
-            raise
-        except QueryBlockedError:
-            logger.warning("Consulta gerada bloqueada pelos guardrails.")
-            raise
-        logger.info("SQL extraído e aprovado pela validação textual.")
-        return sql
+        return _validated_sql(response)
 
-    def query(self, question: str) -> AgentResult:
-        """Gere e execute SQL uma vez, sem correção ou resposta final do modelo."""
-        timeout = validate_query_timeout(self.query_timeout_seconds)
-        sql = self.generate_sql(question)
+    def _execute_sql(self, sql: str, timeout: float) -> QueryResult:
         logger.info("Executando consulta gerada em modo somente leitura.")
         try:
-            result = execute_readonly(
+            return execute_readonly(
                 self.database_path, sql, allowed_tables=self._allowed_tables,
                 max_rows=self.max_rows, timeout_seconds=timeout,
             )
@@ -124,6 +132,34 @@ class CineDataAgent:
         except QueryExecutionError as exc:
             logger.warning("Falha na execução SQL: %s.", type(exc).__name__)
             raise
+
+    def query(self, question: str) -> AgentResult:
+        """Gere e execute SQL, permitindo uma correção de erro recuperável."""
+        timeout = validate_query_timeout(self.query_timeout_seconds)
+        reference = (
+            self.reference_date if self.reference_date is not None else date.today()
+        )
+        sql = self.generate_sql(question, reference_date=reference)
+        corrected = False
+        try:
+            result = self._execute_sql(sql, timeout)
+        except QueryExecutionError as error:
+            if (
+                not error.recoverable
+                or isinstance(error, (QueryTimeoutError, QueryLimitError))
+            ):
+                raise
+            logger.info("Iniciando a única tentativa de correção do SQL.")
+            messages = build_sql_correction_prompt(
+                question, self._schema_context, sql,
+                error.sqlite_error or str(error),
+                reference_date=reference, max_rows=self.max_rows,
+            )
+            response = self._client.complete(messages.system, messages.user)
+            sql = _validated_sql(response)
+            corrected = True
+            # Fora do try da primeira execução: uma nova falha encerra o fluxo.
+            result = self._execute_sql(sql, timeout)
         return AgentResult(
             question=question,
             sql=result.sql,
@@ -131,4 +167,5 @@ class CineDataAgent:
             rows=result.rows,
             truncated=result.truncated,
             elapsed_seconds=result.elapsed_seconds,
+            correction_attempted=corrected,
         )

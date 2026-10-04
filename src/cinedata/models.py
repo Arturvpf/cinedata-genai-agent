@@ -79,6 +79,7 @@ class QueryResult:
 
 @dataclass(frozen=True)
 class AgentResult(QueryResult):
-    """Resultado de execução acrescido da pergunta que originou o SQL."""
+    """Resultado, pergunta original e indicador de tentativa de correção SQL."""
 
     question: str
+    correction_attempted: bool = False

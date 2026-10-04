@@ -145,7 +145,7 @@ def test_rejected_generation_never_reaches_executor(
                     ("SELECT titulo FROM missing_table", "no such table"),
                     ("SELECT FROM dim_movies", "syntax error")],
 )
-def test_execution_errors_propagate_without_model_retry(
+def test_execution_errors_allow_one_correction_then_propagate(
     pipeline_database: Path, simulated_client: Mock, sql: str, detail: str,
 ) -> None:
     simulated_client.complete.return_value = sql
@@ -153,7 +153,7 @@ def test_execution_errors_propagate_without_model_retry(
         CineDataAgent(pipeline_database, simulated_client).query("Filmes")
     assert error.value.recoverable
     assert detail in error.value.sqlite_error
-    simulated_client.complete.assert_called_once()
+    assert simulated_client.complete.call_count == 2
 
 
 def test_query_timeout_does_not_trigger_model_retry(

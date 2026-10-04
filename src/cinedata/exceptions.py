@@ -54,7 +54,7 @@ class QueryBlockedError(CineDataError):
 
 
 class QueryExecutionError(CineDataError):
-    """Falha SQLite; apenas erros de SQL podem permitir uma correção futura."""
+    """Falha SQLite; apenas erros de SQL podem permitir uma correção."""
 
     def __init__(
         self, message: str, *, sqlite_error: str | None = None,
@@ -70,4 +70,4 @@ class QueryTimeoutError(QueryExecutionError):
 
 
 class QueryLimitError(QueryExecutionError):
-    """O resultado ou a expressão ultrapassou um limite de tamanho."""
+    """A consulta ou o resultado ultrapassou limite de tamanho ou complexidade."""

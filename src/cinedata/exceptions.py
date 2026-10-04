@@ -1,5 +1,7 @@
 """Erros da aplicação que podem ser apresentados ao usuário."""
 
+from cinedata.models import AgentResult
+
 
 class CineDataError(Exception):
     """Erro esperado durante o uso do agente."""
@@ -27,6 +29,17 @@ class SchemaInspectionError(CineDataError):
 
 class InvalidModelResponseError(CineDataError):
     """A resposta do modelo não segue o formato esperado."""
+
+
+class AnswerGenerationError(CineDataError):
+    """Falha na redação, conservando o resultado SQL já obtido."""
+
+    def __init__(self, result: AgentResult) -> None:
+        super().__init__(
+            "A consulta foi concluída, mas não foi possível gerar a resposta "
+            "em português. O resultado SQL permanece disponível."
+        )
+        self.result = result
 
 
 class LLMServiceError(CineDataError):

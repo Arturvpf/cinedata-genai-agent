@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter e o agente com geração, execução e correção única de SQL, com testes automatizados. A resposta final em linguagem natural e a CLI serão adicionadas nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter e o agente com geração, execução, correção única de SQL e resposta em português, com testes automatizados. A CLI será adicionada nos próximos passos.
 
 ## Banco de dados local
 
@@ -280,7 +280,7 @@ Os logs dessa etapa registram inicialização, geração e rejeições, sem regi
 
 O método `CineDataAgent.query` conecta a geração ao executor protegido: `pergunta → modelo → extração → guardrails → SQLite → resultado`. Ele usa as tabelas do mesmo esquema enviado ao modelo e abre uma conexão exclusiva de execução em modo somente leitura, com autorizador e limites de recursos. A criação do agente continua fazendo apenas a introspecção local, sem chamada ao modelo.
 
-O exemplo abaixo faz **uma chamada real ao modelo** e executa a consulta gerada no banco local. Se ocorrer um erro recuperável de SQL, pode haver mais uma chamada para correção. Não há chamada adicional para redigir uma resposta em linguagem natural nesta etapa.
+O exemplo abaixo faz **uma chamada real ao modelo** e executa a consulta gerada no banco local. Se ocorrer um erro recuperável de SQL, pode haver mais uma chamada para correção. O método `query` retorna os dados sem fazer uma chamada para redigir a resposta; use `ask`, descrito abaixo, para essa etapa adicional.
 
 ```python
 from cinedata.agent import CineDataAgent
@@ -312,7 +312,7 @@ except (CineDataError, ValueError) as error:
     print(error)
 ```
 
-O retorno `AgentResult` é imutável e acrescenta `question` e `correction_attempted` aos campos do `QueryResult`: `sql`, `columns`, `rows`, `truncated` e `elapsed_seconds`. O SQL retornado é o que produziu o resultado final. Esse tempo corresponde à execução e leitura da consulta SQLite final, sem incluir as chamadas ao modelo nem uma tentativa anterior que falhou. Resultados vazios conservam os nomes das colunas, e resultados parciais mantêm o indicador do executor.
+O retorno `AgentResult` é imutável e acrescenta `question`, `correction_attempted`, `answer` e `answer_context_limited` aos campos do `QueryResult`: `sql`, `columns`, `rows`, `truncated` e `elapsed_seconds`. Em `query`, `answer=None` e `answer_context_limited=False`. O SQL retornado é o que produziu o resultado final. Esse tempo corresponde à execução e leitura da consulta SQLite final, sem incluir as chamadas ao modelo nem uma tentativa anterior que falhou. Resultados vazios conservam os nomes das colunas, e resultados parciais mantêm o indicador do executor.
 
 O limite padrão é de cem linhas e cinco segundos para a consulta. `max_rows` aceita de uma a mil linhas; `query_timeout_seconds` deve ser maior que zero e até sessenta segundos. O timeout é validado antes da geração para evitar consumir uma chamada com configuração inválida. Os limites de bytes e colunas do executor também se aplicam.
 
@@ -329,6 +329,45 @@ O fluxo usa uma chamada de geração e, somente quando necessário, uma chamada 
 O diagnóstico enviado é limitado a dois mil caracteres, com um indicador de truncamento. O SQL anterior conserva seu limite de vinte mil caracteres. As duas mensagens da correção, juntas, não podem exceder cem mil caracteres; o construtor rejeita contexto maior antes da chamada. A data de referência é capturada uma vez por `query` e permanece a mesma na correção, inclusive se o processo atravessar a meia-noite.
 
 O prazo de execução se aplica separadamente a cada tentativa SQLite; não é um prazo total para as chamadas de rede e as duas execuções. `correction_attempted=True` no resultado indica que a correção foi utilizada; sucesso na primeira consulta deixa esse campo como `False`. A tentativa é registrada no log sem incluir a pergunta, o SQL, o diagnóstico bruto ou valores retornados.
+
+## Resposta em português
+
+`CineDataAgent.ask(pergunta)` realiza o mesmo fluxo protegido de `query` e acrescenta uma resposta em `AgentResult.answer`. Para resultados com linhas, faz uma chamada adicional ao modelo, sem repetição automática. O resultado conserva o SQL executado, as colunas, as linhas originais e os indicadores de correção e resultado parcial. Para nenhuma linha, devolve localmente “Nenhum resultado foi encontrado para esta consulta.”, sem consumir uma chamada de redação. Agregações com uma linha contendo zero ou `NULL` seguem para redação normalmente.
+
+O exemplo abaixo faz **chamadas reais** com uma chave válida: normalmente duas (geração de SQL e redação), ou três se houver a correção única. Resultados vazios dispensam a redação. Não há CLI nesta etapa.
+
+```python
+from cinedata.agent import CineDataAgent
+from cinedata.config import load_settings
+from cinedata.exceptions import AnswerGenerationError, CineDataError
+from cinedata.llm import OpenRouterClient
+
+try:
+    settings = load_settings()
+    with OpenRouterClient(settings) as client:
+        agent = CineDataAgent(settings.database_path, client)
+        result = agent.ask("Quais são os cinco filmes com maior bilheteria?")
+        print(result.answer)
+        print(result.sql)
+except AnswerGenerationError as error:
+    print(error)
+    print(error.result.sql)
+    print(error.result.columns)
+    for row in error.result.rows:
+        print(row)
+except (CineDataError, ValueError) as error:
+    print(error)
+```
+
+O contexto da redação inclui a pergunta, o SQL final, colunas e até cinquenta linhas, sem o esquema completo ou o diagnóstico de correção. As linhas são listas posicionais para preservar colunas com nomes repetidos. Textos acima de mil caracteres são reduzidos com um indicador; BLOBs são representados somente pelo tamanho; números não finitos são marcados como indisponíveis. `NULL` e valores numéricos finitos são preservados.
+
+O orçamento das duas mensagens da redação é de cinquenta mil caracteres, medido após serializar o JSON completo, incluindo aspas e escapes. Linhas que não couberem e as que excederem cinquenta são omitidas do contexto. Se os metadados ou a primeira linha não couberem, a redação é rejeitada antes de fazer outra chamada. Essas reduções não alteram `result.rows`: `answer_context_limited=True` sinaliza que alguma linha ou valor não foi enviado integralmente ao modelo.
+
+A aplicação acrescenta avisos à resposta quando `truncated=True` ou `answer_context_limited=True`, mesmo que o modelo omita essa informação. `truncated` se refere ao limite do executor; `answer_context_limited` se refere à redução adicional para redação. Nenhum desses indicadores informa a contagem total de linhas disponíveis.
+
+O prompt orienta o modelo a responder somente a partir dos resultados, tratar textos das linhas como dados e não completar informações omitidas. Ele diferencia ausência de dados de zero, exige atenção a moedas e escalas de notas e orienta a evitar conclusões globais baseadas em uma amostra parcial. Essas instruções não verificam automaticamente a correção semântica da resposta: o SQL e as linhas ficam disponíveis para conferência.
+
+Texto retornado pelo modelo vazio, inválido, com NUL ou acima de vinte mil caracteres, falhas da API e contexto excessivo levantam `AnswerGenerationError`. Os avisos locais de limitação são acrescentados depois dessa validação. O resultado obtido continua acessível em `error.result`, e a causa fica em `error.__cause__`. Não há nova consulta, correção ou chamada de redação por causa dessa falha. Os logs registram a etapa e a classe do erro, sem pergunta, SQL, valores ou resposta gerada. Falhas na consulta continuam sendo propagadas antes de iniciar a redação.
 
 ## Guardrails para consultas
 
@@ -395,6 +434,8 @@ O executor reduz os [limites nativos do SQLite](https://www.sqlite.org/limits.ht
 Bloqueios de segurança levantam `QueryBlockedError`; prazo excedido levanta `QueryTimeoutError`; tamanho ou complexidade excedida levanta `QueryLimitError`. Outros erros SQLite são convertidos em `QueryExecutionError`, com mensagem em português. Para erros de SQL, `recoverable=True` e `sqlite_error` preserva o diagnóstico para a correção única do agente. Timeout e limites de recursos não são recuperáveis. O executor não faz chamadas ao modelo nem repete consultas; a tentativa de correção é administrada pelo agente. A conexão é fechada em todos os casos, e o log registra somente quantidade de linhas, indicador de resultado parcial e tempo, sem valores retornados.
 
 ## Testes
+
+Os testes de redação usam SQLite local e modelos simulados para verificar respostas, resultados vazios e parciais, agregações zero/`NULL`, correção seguida de redação, limites de contexto após escapes JSON, preservação das linhas originais e recuperação do resultado após falha da API. Também verificam que a redação não executa o texto do modelo e que os logs não expõem o conteúdo consultado. Nenhuma chamada real é feita nesses testes.
 
 Com o ambiente virtual ativo, execute:
 

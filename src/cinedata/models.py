@@ -79,7 +79,9 @@ class QueryResult:
 
 @dataclass(frozen=True)
 class AgentResult(QueryResult):
-    """Resultado, pergunta original e indicador de tentativa de correção SQL."""
+    """Resultado auditável e resposta opcional em linguagem natural."""
 
     question: str
     correction_attempted: bool = False
+    answer: str | None = None
+    answer_context_limited: bool = False

@@ -1,10 +1,18 @@
 """Geração, validação e execução de consultas a partir de perguntas."""
 
+from dataclasses import replace
 from datetime import date
 import logging
 from pathlib import Path
 from typing import Protocol
 
+from cinedata.answers import (
+    EMPTY_RESULT_ANSWER,
+    LIMITED_CONTEXT_NOTICE,
+    MAX_ANSWER_CHARS,
+    PARTIAL_RESULT_NOTICE,
+    build_answer_prompt,
+)
 from cinedata.database import (
     DEFAULT_MAX_ROWS,
     DEFAULT_QUERY_TIMEOUT_SECONDS,
@@ -14,8 +22,10 @@ from cinedata.database import (
     validate_query_timeout,
 )
 from cinedata.exceptions import (
+    AnswerGenerationError,
     DatabaseConnectionError,
     InvalidModelResponseError,
+    LLMServiceError,
     QueryBlockedError,
     QueryExecutionError,
     QueryLimitError,
@@ -168,4 +178,39 @@ class CineDataAgent:
             truncated=result.truncated,
             elapsed_seconds=result.elapsed_seconds,
             correction_attempted=corrected,
+        )
+
+    def ask(self, question: str) -> AgentResult:
+        """Consulte e redija uma resposta, sem repetir a chamada de redação.
+
+        Resultados vazios recebem uma mensagem local. Falhas na redação
+        conservam o resultado consultável em AnswerGenerationError.result.
+        Use query para obter os dados sem enviá-los ao modelo de redação.
+        """
+        result = self.query(question)
+        if not result.rows:
+            return replace(result, answer=EMPTY_RESULT_ANSWER)
+        try:
+            prompt = build_answer_prompt(result)
+            logger.info("Iniciando redação com contexto limitado de resultados.")
+            answer = self._client.complete(
+                prompt.messages.system, prompt.messages.user, max_tokens=2_048,
+            )
+            if (
+                not isinstance(answer, str) or not answer.strip()
+                or "\x00" in answer or len(answer) > MAX_ANSWER_CHARS
+            ):
+                raise InvalidModelResponseError("A resposta em português é inválida.")
+        except (LLMServiceError, InvalidModelResponseError, ValueError) as error:
+            logger.warning("Falha na redação da resposta: %s.", type(error).__name__)
+            raise AnswerGenerationError(result) from error
+        notices = []
+        if result.truncated:
+            notices.append(PARTIAL_RESULT_NOTICE)
+        if prompt.context_limited:
+            notices.append(LIMITED_CONTEXT_NOTICE)
+        return replace(
+            result,
+            answer="\n\n".join([*notices, answer.strip()]),
+            answer_context_limited=prompt.context_limited,
         )

@@ -56,3 +56,14 @@ class TablePreview:
     row_count: int
     columns: tuple[str, ...]
     rows: tuple[tuple[SQLiteValue, ...], ...]
+
+
+@dataclass(frozen=True)
+class QueryResult:
+    """Resultado limitado, preservando nomes, tipos e ordem da consulta."""
+
+    sql: str
+    columns: tuple[str, ...]
+    rows: tuple[tuple[SQLiteValue, ...], ...]
+    truncated: bool
+    elapsed_seconds: float

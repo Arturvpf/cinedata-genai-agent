@@ -23,3 +23,23 @@ class InvalidModelResponseError(CineDataError):
 
 class QueryBlockedError(CineDataError):
     """A consulta viola as regras de segurança do agente."""
+
+
+class QueryExecutionError(CineDataError):
+    """Falha SQLite; apenas erros de SQL podem permitir uma correção futura."""
+
+    def __init__(
+        self, message: str, *, sqlite_error: str | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.sqlite_error = sqlite_error
+        self.recoverable = recoverable
+
+
+class QueryTimeoutError(QueryExecutionError):
+    """A consulta ultrapassou o tempo permitido."""
+
+
+class QueryLimitError(QueryExecutionError):
+    """O resultado ou a expressão ultrapassou um limite de tamanho."""

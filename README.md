@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL e a validação de consultas com autorização de operações no SQLite, com testes automatizados. O executor com limites de recursos, o agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails e o executor com limites de leitura, com testes automatizados. A integração com o modelo, o agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -177,7 +177,42 @@ with readonly_connection("cinerocket.db") as connection:
         print(row["titulo"])
 ```
 
-Erros de formato levantam `InvalidModelResponseError`; consultas rejeitadas pela validação ou pela instalação da política levantam `QueryBlockedError`. Uma operação negada pelo autorizador durante `execute` levanta um erro do SQLite, e o objeto retornado pela instalação registra o motivo em `denied_reason`. Limites de tempo, tamanho dos resultados e uso de recursos serão adicionados ao executor na próxima etapa.
+Erros de formato levantam `InvalidModelResponseError`; consultas rejeitadas pela validação ou pela instalação da política levantam `QueryBlockedError`. Uma operação negada pelo autorizador durante `execute` levanta um erro do SQLite, e o objeto retornado pela instalação registra o motivo em `denied_reason`. O executor abaixo converte esses bloqueios em erros da aplicação.
+
+## Execução segura de consultas
+
+A função `execute_readonly`, em `src/cinedata/database.py`, recebe SQL extraído e as tabelas de dados permitidas pela aplicação. Ela valida a consulta, abre uma conexão exclusiva em modo somente leitura, instala o autorizador e devolve um `QueryResult` imutável com `sql`, `columns`, `rows`, `truncated` e `elapsed_seconds`. Os nomes das colunas, a ordem das linhas e os valores originais são preservados, inclusive `NULL` e BLOBs.
+
+```python
+from cinedata.database import execute_readonly, readonly_connection
+from cinedata.guardrails import sanitize_sql
+from cinedata.schema import inspect_schema
+
+with readonly_connection("cinerocket.db") as connection:
+    schema = inspect_schema(connection)
+allowed_tables = {table.name for table in schema if table.name != "alembic_version"}
+
+result = execute_readonly(
+    "cinerocket.db",
+    sanitize_sql("SELECT titulo FROM dim_movies ORDER BY titulo LIMIT 5"),
+    allowed_tables=allowed_tables,
+    max_rows=100,
+    timeout_seconds=5.0,
+)
+print(result.columns)
+for row in result.rows:
+    print(row)
+if result.truncated:
+    print("Resultado parcial: há mais linhas do que o limite retornado.")
+```
+
+Por padrão, o executor retorna até cem linhas. `max_rows` aceita de uma a mil linhas. Ele busca apenas uma linha adicional para detectar resultado parcial, sem acrescentar `LIMIT` ou reescrever a consulta. `truncated=True` indica que o resultado retornado não contém todas as linhas; não fornece a contagem total. Resultados vazios conservam os nomes das colunas.
+
+O prazo padrão é de cinco segundos, configurável com `timeout_seconds` maior que zero e até sessenta segundos. Um [progress handler](https://docs.python.org/3.12/library/sqlite3.html#sqlite3.Connection.set_progress_handler) interrompe consultas demoradas e o prazo também é verificado durante a leitura das linhas. A espera por bloqueios do banco é limitada ao menor valor entre esse prazo e cinco segundos. O prazo da consulta começa após a abertura e configuração da conexão; a abertura tem seu próprio timeout de cinco segundos.
+
+O executor reduz os [limites nativos do SQLite](https://www.sqlite.org/limits.html) para cem colunas, valores/linhas codificadas de até um milhão de bytes e SQL de até oitenta mil bytes, mantendo a validação de até vinte mil caracteres. O conteúdo das colunas e linhas retornadas também possui um orçamento de um milhão de bytes: textos são medidos em UTF-8, BLOBs pelo tamanho e números/`NULL` por uma estimativa de oito bytes. Ao exceder esse orçamento, o executor rejeita o resultado sem truncar valores individuais. Esses limites não representam um teto para toda a memória utilizada pelo processo.
+
+Bloqueios de segurança levantam `QueryBlockedError`; prazo excedido levanta `QueryTimeoutError`; tamanho excedido levanta `QueryLimitError`. Outros erros SQLite são convertidos em `QueryExecutionError`, com mensagem em português. Para erros de SQL, `recoverable=True` e `sqlite_error` preserva o diagnóstico para uma futura tentativa de correção. Timeout e excesso de tamanho não são recuperáveis. O executor não faz chamadas ao modelo nem repete consultas; a única tentativa de correção será implementada no agente. A conexão é fechada em todos os casos, e o log registra somente quantidade de linhas, indicador de resultado parcial e tempo, sem valores retornados.
 
 ## Testes
 
@@ -193,4 +228,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL e guardrails. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas. Eles não dependem do banco da atividade nem de chave OpenRouter.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Eles não dependem do banco da atividade nem de chave OpenRouter.

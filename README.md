@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências e o exemplo de configuração do ambiente. A conexão com o banco, o agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração e a conexão SQLite em modo somente leitura, com testes automatizados. A introspecção reutilizável, o agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -68,4 +68,36 @@ Edite o `.env` local e preencha `OPENROUTER_API_KEY`. A chave fica fora do Git. 
 
 O [roteador gratuito `openrouter/free`](https://openrouter.ai/openrouter/free) seleciona um modelo gratuito disponível. Você poderá trocar o modelo pelo `.env` sem editar o código. A integração com a API e a leitura dessas configurações serão implementadas nas próximas etapas.
 
-Nesta etapa, a instalação não envia chamadas ao OpenRouter nem consome sua cota. As instruções de execução da CLI e dos testes serão adicionadas quando essas funcionalidades estiverem prontas.
+Nesta etapa, a instalação não envia chamadas ao OpenRouter nem consome sua cota. As instruções de execução da CLI serão adicionadas quando essa funcionalidade estiver pronta.
+
+## Conexão SQLite
+
+O módulo `src/cinedata/database.py` abre apenas arquivos existentes, com `mode=ro`, e ativa `query_only`. A conexão é fechada ao sair do bloco `with`, inclusive se uma consulta falhar. Caminhos com espaços e caracteres especiais são convertidos em URI pelo `pathlib`.
+
+Depois da instalação, a conexão pode ser usada em Python:
+
+```python
+from cinedata.database import readonly_connection
+
+with readonly_connection("cinerocket.db") as connection:
+    row = connection.execute("SELECT COUNT(*) AS total FROM dim_movies").fetchone()
+    print(row["total"])
+```
+
+O módulo também desativa `trusted_schema` e apresenta erros específicos para arquivo ausente ou inválido. A validação do SQL gerado pelo modelo será adicionada na etapa de guardrails.
+
+## Testes
+
+Com o ambiente virtual ativo, execute:
+
+```bash
+python -m pytest -v
+```
+
+No PowerShell, sem ativar o ambiente:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -v
+```
+
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos e fechamento da conexão. Eles não dependem do banco da atividade nem de chave OpenRouter.

@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter e o prompt Text-to-SQL, com testes automatizados. O agente, a recuperação de erros, a resposta final e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter e o agente com geração de SQL, com testes automatizados. A execução pelo agente, a recuperação de erros, a resposta final e a CLI serão adicionadas nos próximos passos.
 
 ## Banco de dados local
 
@@ -228,7 +228,7 @@ messages = build_sql_prompt(
 print(messages.user)
 ```
 
-Quando conectado ao cliente na próxima etapa, o agente enviará `messages.system` e `messages.user` ao modelo. A saída solicitada é exclusivamente `{"sql":"SELECT ..."}`, sem Markdown nem explicações. Se o esquema não permitir responder, a instrução é retornar SQL vazio, que a sanitização rejeita. Isso evita instruir o modelo a preencher lacunas com resultados inventados.
+O agente envia `messages.system` e `messages.user` ao modelo. A saída solicitada é exclusivamente `{"sql":"SELECT ..."}`, sem Markdown nem explicações. Se o esquema não permitir responder, a instrução é retornar SQL vazio, que a sanitização rejeita. Isso evita instruir o modelo a preencher lacunas com resultados inventados.
 
 As regras orientam o uso de nomes reais, JOINs pelas FKs, chaves compostas, aliases, agregações, tratamento de `NULL`, divisão real e proteção contra divisão por zero. Também orientam a evitar duplicações de valores financeiros ao combinar pontes e relações de várias linhas por filme. Listas sem quantidade pedida usam o limite informado; quantidades explícitas são preservadas para que o executor possa identificar resultado parcial.
 
@@ -247,6 +247,34 @@ O prompt recebe uma data de referência explícita ou usa a data local atual. Pa
 As orientações de domínio são incluídas somente quando as tabelas e colunas correspondentes existem no contexto. As observações de valores referem-se ao banco fornecido e estão detalhadas em [docs/database.md](docs/database.md). Perguntas podem explicitar outra definição de margem ou outros critérios de análise.
 
 O construtor rejeita perguntas vazias, perguntas acima de quatro mil caracteres, contexto inválido ou acima de sessenta mil caracteres, ausência de tabelas e metadados básicos inválidos. A separação das mensagens orienta o modelo a tratar pedidos embutidos na pergunta ou no esquema como dados; a proteção efetiva continua sendo a validação SQL, o autorizador e a conexão de leitura. Os testes desta etapa verificam a montagem das mensagens; a qualidade do SQL produzido por um modelo real ainda depende da avaliação do agente.
+
+## Geração de SQL pelo agente
+
+O `CineDataAgent`, em `src/cinedata/agent.py`, reúne o fluxo `pergunta → prompt com esquema → cliente → extração → validação textual`. Na inicialização, ele abre o banco em modo somente leitura, coleta os metadados, exclui `alembic_version` e fecha a conexão. O esquema é guardado em memória e reutilizado nas gerações seguintes; a inicialização não chama o modelo nem coleta amostras dos dados.
+
+O exemplo abaixo faz **uma chamada real ao modelo** quando executado com chave válida. Nesta etapa, ele mostra apenas o SQL gerado e validado textualmente, sem executá-lo.
+
+```python
+from cinedata.agent import CineDataAgent
+from cinedata.config import load_settings
+from cinedata.exceptions import CineDataError
+from cinedata.llm import OpenRouterClient
+
+try:
+    settings = load_settings()
+    with OpenRouterClient(settings) as client:
+        agent = CineDataAgent(settings.database_path, client, max_rows=100)
+        sql = agent.generate_sql("Quais são os cinco filmes com maior bilheteria?")
+        print(sql)
+except (CineDataError, ValueError) as error:
+    print(error)
+```
+
+`generate_sql` faz uma única chamada por pergunta, aceita os formatos suportados por `sanitize_sql` e passa o SQL extraído por `validate_sql`. Perguntas inválidas param antes da chamada. Respostas inválidas, consultas bloqueadas e erros da API são propagados sem repetição automática e sem executar SQL. A verificação completa de sintaxe, nomes de colunas e permissões continua sob responsabilidade do executor SQLite; a ligação com esse executor será implementada na próxima etapa.
+
+O agente recebe o cliente pelo contrato simples `TextCompletionClient` e não é responsável por fechá-lo. O bloco `with OpenRouterClient(...)` administra esse recurso. As propriedades `schema_context` e `allowed_tables` expõem, respectivamente, os metadados sem linhas e os nomes das tabelas desse mesmo contexto para uso pelo executor. O caminho do banco é resolvido uma vez para permanecer estável se a pasta atual mudar. Se o esquema do arquivo for alterado, crie uma nova instância para recolher os metadados atualizados.
+
+Os logs dessa etapa registram inicialização, geração e rejeições, sem registrar a pergunta, o SQL ou valores dos dados. Os testes incluem um fluxo com o SDK real e transporte HTTP simulado. Isso verifica a integração dos módulos sem avaliar a qualidade de um modelo externo nem consumir cota da API.
 
 ## Guardrails para consultas
 
@@ -326,4 +354,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Os testes do cliente usam o SDK real com transporte HTTP simulado para verificar requisições, autenticação, ausência de retries, erros de rede/HTTP, validação de respostas e fechamento do cliente. Os testes dos prompts verificam serialização, preservação de nomes/chaves, seleção das orientações conforme as colunas disponíveis e limites de entrada. Eles não dependem do banco da atividade nem de chave OpenRouter e não enviam chamadas reais à API.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Os testes do cliente usam o SDK real com transporte HTTP simulado para verificar requisições, autenticação, ausência de retries, erros de rede/HTTP, validação de respostas e fechamento do cliente. Os testes dos prompts verificam serialização, preservação de nomes/chaves, seleção das orientações conforme as colunas disponíveis e limites de entrada. Os testes do agente verificam coleta única do esquema, geração com uma chamada, rejeição de escrita, erros sem repetição e ausência de execução durante a geração. Eles não dependem do banco da atividade nem de chave OpenRouter e não enviam chamadas reais à API.

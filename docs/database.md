@@ -42,6 +42,14 @@ Os valores reais de `dim_people.tipo_pessoa` são:
 
 As finanças possuem campos distintos em USD e BRL, identificados pelos sufixos `_usd` e `_brl`. Uma consulta deve usar a mesma moeda para receita e orçamento. Amostras limitadas não demonstram a qualidade de todos os dados nem substituem a definição dos critérios de cada análise.
 
+Uma verificação de leitura sobre `fact_movies_performance` encontrou 92.272 receitas USD nulas e 87.719 orçamentos USD nulos; não encontrou valores zero nesses dois campos. Nas 1.630 linhas com receita, orçamento e lucro USD informados, não houve diferença maior que USD 0,01 entre `lucro_usd` e `receita_usd - orcamento_usd`. Esses resultados sustentam a fórmula de lucro adotada e o cuidado de preservar ausências como `NULL`.
+
+## Critérios do prompt
+
+Quando a pergunta não especifica moeda, as consultas usam USD. A margem padrão é o retorno percentual sobre orçamento: `100.0 * (Receita - Orçamento) / NULLIF(Orçamento, 0)`, usando orçamento positivo e receita não nula. Receita informada é receita não nula; lucro também exige orçamento não nulo. Pedidos explícitos em BRL usam os campos BRL sem misturar moedas.
+
+Para “últimos N anos” sem intervalo explícito, o prompt usa uma janela móvel da data de referência menos N anos até a data de referência, incluindo as extremidades. Lançamentos futuros são excluídos dessa janela. A data pode ser fornecida pela aplicação para reproduzir uma avaliação; sem argumento, utiliza-se a data local atual.
+
 ## Reprodução da inspeção
 
 Após instalar as dependências, na raiz do projeto:

@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura e o cliente OpenRouter, com testes automatizados. Os prompts, o agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, a leitura de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL, os guardrails, o executor com limites de leitura, o cliente OpenRouter e o prompt Text-to-SQL, com testes automatizados. O agente, a recuperação de erros, a resposta final e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -205,6 +205,49 @@ print(sql)
 
 A extração preserva comentários, literais e todas as instruções presentes na resposta. Ela não executa o SQL. A consulta extraída deve passar por `validate_sql` e pela autorização do SQLite antes da execução.
 
+## Prompt Text-to-SQL
+
+O módulo `src/cinedata/prompts.py` centraliza as instruções para geração de SQL. `build_sql_prompt` recebe uma pergunta e o contexto JSON produzido por `format_schema_for_llm`, sem abrir o banco nem chamar o modelo. Ele devolve `PromptMessages` com as mensagens `system` e `user` separadas. A pergunta, o esquema, a data de referência e o limite de resultados ficam em um objeto JSON na mensagem `user`; aspas, quebras de linha e nomes especiais são preservados como dados.
+
+```python
+from datetime import date
+from cinedata.database import readonly_connection
+from cinedata.prompts import build_sql_prompt
+from cinedata.schema import format_schema_for_llm, inspect_schema
+
+with readonly_connection("cinerocket.db") as connection:
+    schema_context = format_schema_for_llm(inspect_schema(connection))
+
+messages = build_sql_prompt(
+    "Quais são os cinco filmes com maior bilheteria?",
+    schema_context,
+    reference_date=date(2026, 10, 4),
+    max_rows=100,
+)
+# Preparar as mensagens não faz chamada à API.
+print(messages.user)
+```
+
+Quando conectado ao cliente na próxima etapa, o agente enviará `messages.system` e `messages.user` ao modelo. A saída solicitada é exclusivamente `{"sql":"SELECT ..."}`, sem Markdown nem explicações. Se o esquema não permitir responder, a instrução é retornar SQL vazio, que a sanitização rejeita. Isso evita instruir o modelo a preencher lacunas com resultados inventados.
+
+As regras orientam o uso de nomes reais, JOINs pelas FKs, chaves compostas, aliases, agregações, tratamento de `NULL`, divisão real e proteção contra divisão por zero. Também orientam a evitar duplicações de valores financeiros ao combinar pontes e relações de várias linhas por filme. Listas sem quantidade pedida usam o limite informado; quantidades explícitas são preservadas para que o executor possa identificar resultado parcial.
+
+O prompt recebe uma data de referência explícita ou usa a data local atual. Para “últimos N anos” sem outro intervalo, o critério é uma janela móvel entre essa data menos N anos e a data de referência, incluindo as extremidades e excluindo lançamentos futuros. Perguntas com anos de calendário explícitos seguem os anos solicitados.
+
+### Critérios de análise
+
+- Receita, faturamento e bilheteria são tratados como sinônimos financeiros.
+- A moeda padrão é USD; pedidos em reais usam BRL. Receita e orçamento devem usar a mesma moeda.
+- Lucro é `Receita - Orçamento`, com ambos os valores informados.
+- A margem adotada é o retorno percentual sobre orçamento: `100.0 * (Receita - Orçamento) / NULLIF(Orçamento, 0)`, com orçamento positivo e receita não nula.
+- Receita informada significa receita não nula. Valores ausentes não são substituídos automaticamente por zero.
+- Para papéis de pessoas, o contexto descreve os valores `Ator`, `Diretor` e `Roteirista` observados no banco fornecido.
+- Avaliações individuais e indicadores agregados por filme recebem orientações diferentes; as notas de usuários observadas estão na faixa de 0 a 10.
+
+As orientações de domínio são incluídas somente quando as tabelas e colunas correspondentes existem no contexto. As observações de valores referem-se ao banco fornecido e estão detalhadas em [docs/database.md](docs/database.md). Perguntas podem explicitar outra definição de margem ou outros critérios de análise.
+
+O construtor rejeita perguntas vazias, perguntas acima de quatro mil caracteres, contexto inválido ou acima de sessenta mil caracteres, ausência de tabelas e metadados básicos inválidos. A separação das mensagens orienta o modelo a tratar pedidos embutidos na pergunta ou no esquema como dados; a proteção efetiva continua sendo a validação SQL, o autorizador e a conexão de leitura. Os testes desta etapa verificam a montagem das mensagens; a qualidade do SQL produzido por um modelo real ainda depende da avaliação do agente.
+
 ## Guardrails para consultas
 
 A função `validate_sql` permite uma única instrução iniciada por `SELECT` ou `WITH` de leitura. A análise distingue comentários, literais e identificadores entre aspas; ponto e vírgula dentro de um texto não conta como outra instrução. Comandos de escrita ou configuração, múltiplas instruções, funções perigosas e funções `pragma_*` são bloqueados. A sintaxe completa continua sendo verificada pelo SQLite.
@@ -283,4 +326,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Os testes do cliente usam o SDK real com transporte HTTP simulado para verificar requisições, autenticação, ausência de retries, erros de rede/HTTP, validação de respostas e fechamento do cliente. Eles não dependem do banco da atividade nem de chave OpenRouter e não enviam chamadas reais à API.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL, guardrails e execução segura. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas, que consultas recursivas sem fim são interrompidas e que limites de linhas e bytes são aplicados. Os testes de configuração usam chaves fictícias para verificar precedência do ambiente, erros de configuração, caminhos relativos e absolutos, UTF-8/BOM e ocultação da chave na representação textual. Os testes do cliente usam o SDK real com transporte HTTP simulado para verificar requisições, autenticação, ausência de retries, erros de rede/HTTP, validação de respostas e fechamento do cliente. Os testes dos prompts verificam serialização, preservação de nomes/chaves, seleção das orientações conforme as colunas disponíveis e limites de entrada. Eles não dependem do banco da atividade nem de chave OpenRouter e não enviam chamadas reais à API.

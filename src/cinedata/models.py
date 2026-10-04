@@ -7,6 +7,14 @@ SQLiteValue = str | int | float | bytes | None
 
 
 @dataclass(frozen=True)
+class PromptMessages:
+    """Mensagens separadas para as instruções e os dados de uma chamada."""
+
+    system: str
+    user: str
+
+
+@dataclass(frozen=True)
 class ColumnSchema:
     """Coluna conforme o PRAGMA table_xinfo, sem inferir tipos ou restrições."""
 

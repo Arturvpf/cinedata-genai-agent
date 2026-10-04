@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados e a representação textual do esquema para o modelo, com testes automatizados. O agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema e a extração das respostas SQL do modelo, com testes automatizados. A validação de consultas, o agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -137,6 +137,19 @@ A função `format_schema_for_llm` recebe os metadados já coletados e produz JS
 
 A inspeção normal preserva `alembic_version`; o contexto para o modelo exclui essa tabela de controle por padrão. O contexto do banco da atividade contém as dez tabelas de dados. No código, o parâmetro `excluded_tables` permite alterar as exclusões. As tabelas são ordenadas para que o contexto permaneça estável e possa ser reutilizado em memória pelo agente.
 
+## Extração da resposta SQL
+
+A função `sanitize_sql`, em `src/cinedata/guardrails.py`, extrai uma consulta de SQL puro, de um objeto JSON com somente o campo `sql` ou de um bloco Markdown completo (`sql`, `json` ou sem rótulo). Ela rejeita respostas vazias, JSON inválido, chaves duplicadas, blocos incompletos, formatos ambíguos e respostas acima de 20 mil caracteres.
+
+```python
+from cinedata.guardrails import sanitize_sql
+
+sql = sanitize_sql('{"sql": "SELECT titulo FROM dim_movies LIMIT 5"}')
+print(sql)
+```
+
+A extração preserva comentários, literais e todas as instruções presentes na resposta. Ela não executa o SQL. A validação de somente leitura e de uma única instrução será implementada na próxima etapa, antes de conectar respostas do modelo à execução.
+
 ## Testes
 
 Com o ambiente virtual ativo, execute:
@@ -151,4 +164,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas e contexto JSON. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas. Eles não dependem do banco da atividade nem de chave OpenRouter.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON e extração das respostas SQL. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas e que a extração preserva o SQL para validação posterior. Eles não dependem do banco da atividade nem de chave OpenRouter.

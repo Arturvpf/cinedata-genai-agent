@@ -15,3 +15,7 @@ class DatabaseNotFoundError(DatabaseConnectionError):
 
 class SchemaInspectionError(CineDataError):
     """Não foi possível consultar a estrutura do banco SQLite."""
+
+
+class InvalidModelResponseError(CineDataError):
+    """A resposta do modelo não segue o formato esperado."""

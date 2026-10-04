@@ -19,3 +19,7 @@ class SchemaInspectionError(CineDataError):
 
 class InvalidModelResponseError(CineDataError):
     """A resposta do modelo não segue o formato esperado."""
+
+
+class QueryBlockedError(CineDataError):
+    """A consulta viola as regras de segurança do agente."""

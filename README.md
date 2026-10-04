@@ -2,7 +2,7 @@
 
 Projeto Python para consultar o catálogo de filmes da CineData Analytics em linguagem natural. O agente usará um modelo via OpenRouter para gerar consultas SQLite, validará o SQL antes da execução e apresentará os resultados em português por uma interface de linha de comando.
 
-O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema e a extração das respostas SQL do modelo, com testes automatizados. A validação de consultas, o agente e a CLI serão adicionados nos próximos passos.
+O desenvolvimento está organizado em etapas. O repositório contém a estrutura inicial do pacote, as dependências, o exemplo de configuração, a conexão SQLite em modo somente leitura, a inspeção de esquema e dados, o contexto do esquema, a extração das respostas SQL e a validação de consultas com autorização de operações no SQLite, com testes automatizados. O executor com limites de recursos, o agente e a CLI serão adicionados nos próximos passos.
 
 ## Banco de dados local
 
@@ -84,7 +84,7 @@ with readonly_connection("cinerocket.db") as connection:
     print(row["total"])
 ```
 
-O módulo também desativa `trusted_schema` e apresenta erros específicos para arquivo ausente ou inválido. A validação do SQL gerado pelo modelo será adicionada na etapa de guardrails.
+O módulo também desativa `trusted_schema` e apresenta erros específicos para arquivo ausente ou inválido. Para consultas geradas pelo modelo, use também a validação e o autorizador descritos na seção de guardrails.
 
 ## Inspeção do esquema
 
@@ -148,7 +148,36 @@ sql = sanitize_sql('{"sql": "SELECT titulo FROM dim_movies LIMIT 5"}')
 print(sql)
 ```
 
-A extração preserva comentários, literais e todas as instruções presentes na resposta. Ela não executa o SQL. A validação de somente leitura e de uma única instrução será implementada na próxima etapa, antes de conectar respostas do modelo à execução.
+A extração preserva comentários, literais e todas as instruções presentes na resposta. Ela não executa o SQL. A consulta extraída deve passar por `validate_sql` e pela autorização do SQLite antes da execução.
+
+## Guardrails para consultas
+
+A função `validate_sql` permite uma única instrução iniciada por `SELECT` ou `WITH` de leitura. A análise distingue comentários, literais e identificadores entre aspas; ponto e vírgula dentro de um texto não conta como outra instrução. Comandos de escrita ou configuração, múltiplas instruções, funções perigosas e funções `pragma_*` são bloqueados. A sintaxe completa continua sendo verificada pelo SQLite.
+
+O `install_readonly_authorizer` instala uma política na conexão usando o [autorizador do SQLite](https://www.sqlite.org/c3ref/set_authorizer.html). Durante a compilação da consulta, ele permite somente leituras das tabelas informadas e uma lista explícita de funções de consulta, como `COUNT`, `SUM`, `AVG`, funções de datas e funções de janela. Operações de escrita, configuração, acesso a outras tabelas e funções fora dessa lista são negadas antes da execução.
+
+Colete os metadados antes de instalar a política. Use uma conexão nova, exclusiva para consultas, que contenha somente o banco principal; a instalação rejeita conexões com bancos anexados ou temporários. O autorizador permanece ativo até o fechamento da conexão.
+
+```python
+from cinedata.database import readonly_connection
+from cinedata.guardrails import (
+    install_readonly_authorizer,
+    sanitize_sql,
+    validate_sql,
+)
+from cinedata.schema import inspect_schema
+
+with readonly_connection("cinerocket.db") as connection:
+    schema = inspect_schema(connection)
+    allowed_tables = {table.name for table in schema if table.name != "alembic_version"}
+    install_readonly_authorizer(connection, allowed_tables)
+    sql = validate_sql(sanitize_sql("SELECT titulo FROM dim_movies LIMIT 5"))
+    rows = connection.execute(sql).fetchall()
+    for row in rows:
+        print(row["titulo"])
+```
+
+Erros de formato levantam `InvalidModelResponseError`; consultas rejeitadas pela validação ou pela instalação da política levantam `QueryBlockedError`. Uma operação negada pelo autorizador durante `execute` levanta um erro do SQLite, e o objeto retornado pela instalação registra o motivo em `denied_reason`. Limites de tempo, tamanho dos resultados e uso de recursos serão adicionados ao executor na próxima etapa.
 
 ## Testes
 
@@ -164,4 +193,4 @@ No PowerShell, sem ativar o ambiente:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON e extração das respostas SQL. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas e que a extração preserva o SQL para validação posterior. Eles não dependem do banco da atividade nem de chave OpenRouter.
+Os testes atuais criam bancos temporários e verificam leitura, bloqueio de escrita, caminhos especiais, arquivos ausentes ou inválidos, fechamento da conexão, introspecção, contagens, amostras limitadas, contexto JSON, extração das respostas SQL e guardrails. Há casos para PK/FK compostas, colunas geradas, referências implícitas, textos longos, BLOBs e nomes de tabela contendo aspas e pontuação SQL. Também verificam que o contexto não inclui valores das linhas, que a extração preserva o SQL para validação posterior e que o autorizador bloqueia escrita, tabelas não permitidas e funções perigosas mesmo sem a validação textual. Os testes comprovam que funções bloqueadas não chegam a ser chamadas. Eles não dependem do banco da atividade nem de chave OpenRouter.

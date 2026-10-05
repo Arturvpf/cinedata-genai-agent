@@ -23,6 +23,7 @@ from cinedata.exceptions import (
     SchemaInspectionError,
 )
 from cinedata.llm import OpenRouterClient
+from cinedata.prompts import SQL_RESPONSE_SCHEMA
 
 
 REFERENCE_DATE = date(2026, 10, 4)
@@ -300,3 +301,65 @@ def test_agent_integrates_with_real_sdk_using_mock_http(
     prompt = json.loads(body["messages"][1]["content"])
     assert prompt["question"] == "Cinco filmes"
     assert len(prompt["schema"]["tables"]) == 3
+    assert body["response_format"]["json_schema"]["schema"] == SQL_RESPONSE_SCHEMA
+    assert body["provider"] == {"require_parameters": True}
+
+
+def test_sdk_pipeline_requests_structured_sql_for_generation_and_correction_only(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bodies = []
+    contents = iter([
+        json.dumps({"sql": "SELECT missing FROM dim_movies"}),
+        json.dumps({"sql": SQL}),
+        "O filme encontrado foi private-title-marker.",
+    ])
+
+    def respond(request):
+        bodies.append(json.loads(request.content))
+        return httpx2.Response(200, json={
+            "id": "test", "created": 0, "model": "test/model",
+            "object": "chat.completion",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": next(contents),
+            }}],
+        })
+
+    def sdk_factory(**kwargs):
+        return SDKOpenAI(
+            **kwargs, http_client=httpx2.Client(transport=httpx2.MockTransport(respond)),
+        )
+
+    monkeypatch.setattr(llm_module, "OpenAI", sdk_factory)
+    settings = Settings("test-agent-key-only", "openrouter/free", database_path)
+    original = database_path.read_bytes()
+    with OpenRouterClient(settings) as client:
+        result = CineDataAgent(database_path, client).ask("Quais filmes existem?")
+    assert result.rows == (("private-title-marker",),)
+    assert result.correction_attempted
+    assert result.answer == "O filme encontrado foi private-title-marker."
+    assert len(bodies) == 3
+    for body in bodies[:2]:
+        assert body["response_format"]["json_schema"]["schema"] == SQL_RESPONSE_SCHEMA
+        assert body["provider"] == {"require_parameters": True}
+    assert "response_format" not in bodies[2] and "provider" not in bodies[2]
+    assert database_path.read_bytes() == original
+
+
+@pytest.mark.parametrize("content", [
+    "Aqui esta a consulta: SELECT titulo FROM dim_movies",
+    '{"sql": "DELETE FROM dim_movies"}',
+])
+def test_structured_request_does_not_trust_invalid_or_unsafe_provider_output(
+    database_path: Path, client: Mock, monkeypatch: pytest.MonkeyPatch, content: str,
+) -> None:
+    client.complete.return_value = content
+    execute = Mock(wraps=agent_module.execute_readonly)
+    monkeypatch.setattr(agent_module, "execute_readonly", execute)
+    original = database_path.read_bytes()
+    with pytest.raises(QueryBlockedError):
+        CineDataAgent(database_path, client).query("Quais filmes existem?")
+    client.complete.assert_called_once()
+    assert client.complete.call_args.kwargs["response_schema"] == SQL_RESPONSE_SCHEMA
+    execute.assert_not_called()
+    assert database_path.read_bytes() == original

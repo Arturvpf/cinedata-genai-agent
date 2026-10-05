@@ -46,7 +46,10 @@ def _http_error(status_code: int | None) -> LLMServiceError:
     if status_code == 402:
         message = "O OpenRouter informou créditos insuficientes para esse modelo."
     elif status_code == 404:
-        message = "O modelo não foi encontrado. Confira OPENROUTER_MODEL."
+        message = (
+            "Modelo ou provedor compatível não encontrado. Confira OPENROUTER_MODEL "
+            "e o suporte a saídas estruturadas (JSON Schema) para gerar SQL."
+        )
     elif status_code in {400, 422}:
         message = "O OpenRouter recusou os parâmetros ou o conteúdo da requisição."
     elif status_code is not None and status_code >= 500:
@@ -118,6 +121,7 @@ class OpenRouterClient:
     def complete(
         self, system_prompt: str, user_prompt: str, *,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_schema: dict[str, object] | None = None,
     ) -> str:
         """Envie duas mensagens de texto e exija uma resposta completa."""
         if self._closed:
@@ -131,6 +135,19 @@ class OpenRouterClient:
             raise ValueError("Os prompts excedem o limite de tamanho permitido.")
         if type(max_tokens) is not int or not 1 <= max_tokens <= 8_192:
             raise ValueError("max_tokens deve ser inteiro entre 1 e 8192.")
+        options = {}
+        if response_schema is not None:
+            if not isinstance(response_schema, dict):
+                raise ValueError("response_schema deve ser um objeto JSON Schema.")
+            options = {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response", "strict": True, "schema": response_schema,
+                    },
+                },
+                "extra_body": {"provider": {"require_parameters": True}},
+            }
         logger.info("Enviando requisição ao OpenRouter.")
         try:
             response = self._client.chat.completions.create(
@@ -141,6 +158,7 @@ class OpenRouterClient:
                 ],
                 max_tokens=max_tokens,
                 stream=False,
+                **options,
             )
         except APITimeoutError as exc:
             logger.warning("Timeout na chamada ao OpenRouter.")

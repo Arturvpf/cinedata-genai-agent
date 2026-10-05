@@ -65,6 +65,8 @@ Crie uma conta no [OpenRouter](https://openrouter.ai/) e gere a chave na [págin
 
 O modelo é configurável sem editar código. A integração usa o SDK OpenAI com `https://openrouter.ai/api/v1` e uma chave **OpenRouter**.
 
+A geração e a correção de SQL solicitam saída estruturada com JSON Schema, contendo apenas o campo `sql`, e exigem um provedor compatível com os parâmetros enviados. Ao escolher outro modelo, confira esse suporte. O roteador `openrouter/free` filtra os modelos pelas capacidades solicitadas, conforme a [documentação do OpenRouter](https://openrouter.ai/docs/guides/routing/routers/free-router). A redação da resposta continua em texto livre. O SQL recebido sempre passa pelos guardrails antes de executar.
+
 Variáveis de ambiente têm prioridade sobre o `.env`, inclusive quando estão vazias. Caminhos relativos de `DATABASE_PATH` são resolvidos contra a pasta do `.env` selecionado. A CLI lê somente o `.env` da pasta de execução por padrão; use `--env-file` para escolher outro. Não há busca em pastas superiores nem expansão de `${VAR}`.
 
 `.env`, ambientes virtuais e bancos estão no `.gitignore`. `.env.example` é versionado sem chave. Instalação, inicialização e leitura de configuração não fazem chamadas ao modelo. A chave e os corpos de erros HTTP não são registrados nos logs.
@@ -105,7 +107,7 @@ Exemplo para consulta extensa e outra configuração:
 python main.py --env-file "config/local.env" --raw --max-rows 20 --query-timeout 30
 ```
 
-O modo padrão normalmente faz duas chamadas: geração de SQL e redação. Contagens escalares simples `SELECT COUNT(...) FROM ...` recebem uma resposta local, usando apenas a geração. Uma correção recuperável pode acrescentar uma chamada. `--raw` normalmente faz apenas a geração, podendo acrescentar a correção única. Resultados sem linhas também recebem uma mensagem local.
+O modo padrão normalmente faz duas chamadas: geração de SQL e redação. Contagens escalares simples `SELECT COUNT(...) FROM ...` e contagens agrupadas reconhecidas recebem uma resposta local, usando apenas a geração. Para grupos, são reconhecidos resultados de até 50 linhas e duas colunas: um rótulo e uma expressão `COUNT(...)`, sem cálculos adicionais ou janelas. Resultados mais complexos continuam usando o modelo para redigir. Uma correção recuperável pode acrescentar uma chamada. `--raw` normalmente faz apenas a geração, podendo acrescentar a correção única. Resultados sem linhas também recebem uma mensagem local.
 
 Na mesma sessão, o agente lembra até 32 consultas executadas com sucesso. Uma pergunta idêntica, com a mesma data de referência e limite de linhas, reutiliza o SQL e consulta novamente o banco. Linhas e respostas não ficam no cache. Repetir uma contagem reconhecida pode dispensar todas as chamadas ao modelo; outras respostas ainda podem precisar da redação. Ao reiniciar, mudar a data ou retirar uma consulta do cache, a geração volta a ser necessária.
 
@@ -113,7 +115,15 @@ Na mesma sessão, o agente lembra até 32 consultas executadas com sucesso. Uma 
 
 Depois de enviar a pergunta, aguarde a resposta ou a mensagem de erro antes de digitar outra. O modo padrão exibe o resultado ao final do processamento e pode ficar sem novas mensagens enquanto aguarda o modelo. Na sessão interativa, o próximo `>` indica que é possível fazer outra pergunta. Use `Ctrl+C` para interromper e encerrar a execução.
 
-**Não há uma média representativa de tempo de resposta.** Em uma amostra local com `openrouter/free`, a contagem do catálogo levou **2,8 s** e o ranking de receita em R$ levou **34,7 s**, incluindo uma correção de SQL. Uma terceira pergunta recebeu uma saída inválida e foi bloqueada após **4,0 s**. São três tentativas, sem repetições; esses valores não representam uma garantia nem uma média geral. Os resultados e as limitações estão na [revisão do projeto](docs/project-review.md).
+**Não há uma média representativa de tempo de resposta.** A pergunta “Quantos filmes existem por gênero, incluindo gêneros sem filmes?” teve os seguintes tempos em execuções reais com `openrouter/free`:
+
+| Situação | Tempo observado | Chamadas ao modelo |
+| --- | --- | --- |
+| Antes da resposta local para grupos | 78,5 s | Geração e redação |
+| Com a resposta local para grupos | 8,7 s | Uma geração, de 7,2 s |
+| Repetição na mesma sessão | 1,5 s | Nenhuma; o SQL foi reutilizado e o banco consultado novamente |
+
+As 19 contagens coincidiram com a referência. São medições pontuais, feitas em execuções distintas, não uma média ou garantia de velocidade. Outras perguntas ainda podem levar mais de um minuto, especialmente quando exigem redação pelo modelo. O histórico das medições e suas limitações estão na [revisão do projeto](docs/project-review.md).
 
 A espera depende do modelo, da rede, da consulta e do número de chamadas. Geração, eventual correção e redação são etapas separadas; por isso o total pode ultrapassar 30 segundos. O timeout de rede de 30 s vale para operações de rede, não para a pergunta inteira. `--query-timeout` controla apenas o SQLite. Análises extensas de elenco/equipe podem precisar de `--query-timeout 30`, mesmo quando a conexão com o modelo funciona normalmente.
 
@@ -238,7 +248,7 @@ Há **uma única correção SQL** para erros recuperáveis de sintaxe, tabela ou
 | Rede | Timeout de operações de 30 s; não é prazo total da pergunta |
 | Contexto para redação | Até 50 linhas, textos de até 1000 caracteres e mensagens de até 50 mil caracteres |
 
-Resultados parciais recebem avisos. Dados brutos permanecem disponíveis quando o contexto de redação é reduzido. Se a redação falhar, a CLI mostra o SQL e os dados já obtidos; a API Python mantém esse resultado em `AnswerGenerationError.result`. Resultados vazios e contagens escalares reconhecidas recebem mensagem local. Uma agregação com uma linha contendo zero ou `NULL` continua sendo um resultado válido; zero em uma contagem é apresentado como zero.
+Resultados parciais recebem avisos, inclusive nas contagens agrupadas respondidas localmente. Dados brutos permanecem disponíveis quando o contexto de redação é reduzido. Se a redação falhar, a CLI mostra o SQL e os dados já obtidos; a API Python mantém esse resultado em `AnswerGenerationError.result`. Resultados vazios e contagens reconhecidas recebem mensagem local. Uma agregação com uma linha contendo zero ou `NULL` continua sendo um resultado válido; zero em uma contagem é apresentado como zero.
 
 Logs registram etapas, quantidade, tempo e classes de erros. Pergunta, SQL, valores e resposta aparecem apenas na apresentação solicitada pela CLI, não nos logs. Os métodos `generate_sql`, `query` e `ask`, as classes de erro e os detalhes técnicos estão em [docs/implementation.md](docs/implementation.md).
 
@@ -262,7 +272,7 @@ A inspeção mostra esquema, contagens exatas e até três amostras por tabela, 
 
 A suíte usa bancos temporários e respostas simuladas, incluindo o SDK com transporte HTTP simulado. Verifica leitura, introspecção, guardrails, limites, configuração, integração, correção única, redação, CLI e referências de avaliação. Não depende de chave nem do banco da atividade.
 
-**Validação local: 636 testes passaram.** As 22 referências executaram no banco fornecido sem falhas, sem resultados parciais e sem alterar tamanho ou data de modificação do arquivo. O histórico incremental possui mais de quinze commits reais, feitos durante as etapas do desenvolvimento.
+**Validação local: 668 testes passaram.** As 22 referências executaram no banco fornecido sem falhas, sem resultados parciais e sem alterar tamanho ou data de modificação do arquivo. O histórico incremental possui mais de quinze commits reais, feitos durante as etapas do desenvolvimento.
 
 As referências verificam SQL e critérios conhecidos; não comprovam a qualidade do modelo externo. A avaliação de uma pergunta real, conferência de resultados e reprodução da data está em [docs/evaluation.md](docs/evaluation.md). Os testes automatizados não fazem chamadas reais. Uma amostra separada de três perguntas ao modelo, com dois sucessos e uma falha, está documentada na [revisão de aderência e qualidade](docs/project-review.md).
 
@@ -275,6 +285,7 @@ O usuário também confirmou sucesso em todos os cenários do roteiro manual: co
 | Chave ausente | Preencha `OPENROUTER_API_KEY` no `.env` ou no ambiente |
 | Banco não encontrado | Confira nome do arquivo e resolução de `DATABASE_PATH` |
 | Erro HTTP, autenticação ou 429 | Siga a mensagem exibida; não há repetição automática |
+| Modelo ou provedor compatível não encontrado | Confira `OPENROUTER_MODEL` e o suporte do provedor a saída estruturada com JSON Schema |
 | Consulta extensa interrompida | Avalie aumentar `--query-timeout`, até 60 s |
 | Resposta parcial ou contexto reduzido | Confira os avisos e use raw/debug para inspecionar os dados |
 | Pergunta ambígua ou resposta incorreta | Especifique moeda, período, nota, limiar e quantidade; revise SQL e resultados |

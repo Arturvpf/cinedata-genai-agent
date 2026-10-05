@@ -19,6 +19,7 @@ from cinedata.exceptions import (
     LLMTimeoutError,
 )
 from cinedata.llm import OpenRouterClient
+from cinedata.prompts import SQL_RESPONSE_SCHEMA
 
 
 FAKE_KEY = "test-key-for-llm-only"
@@ -111,6 +112,48 @@ def test_sends_one_authenticated_request_and_returns_text(make_client) -> None:
     assert body["max_tokens"] == 500
     assert body["stream"] is False
     assert "tools" not in body
+    assert "response_format" not in body
+    assert "provider" not in body
+
+
+def test_structured_request_requires_compatible_provider_without_affecting_next_text_call(
+    make_client,
+) -> None:
+    client, requests, _, _ = make_client(body=completion('{"sql": "SELECT 1"}'))
+    client.complete(SYSTEM_PROMPT, USER_PROMPT, response_schema=SQL_RESPONSE_SCHEMA)
+    client.complete(SYSTEM_PROMPT, USER_PROMPT)
+    structured, plain = [json.loads(request.content) for request in requests]
+    assert structured["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "response", "strict": True, "schema": {
+            "type": "object", "properties": SQL_RESPONSE_SCHEMA["properties"],
+            "required": ["sql"], "additionalProperties": False,
+        }},
+    }
+    assert structured["response_format"]["json_schema"]["schema"]["properties"]["sql"]["type"] == "string"
+    assert structured["provider"] == {"require_parameters": True}
+    assert "response_format" not in plain and "provider" not in plain
+
+
+@pytest.mark.parametrize("status", [400, 404])
+def test_unsupported_structured_output_fails_without_retry_as_plain_text(make_client, status):
+    client, requests, _, _ = make_client(status=status, body={
+        "error": {"message": "private-provider-diagnostic", "code": status},
+    })
+    with pytest.raises(LLMServiceError) as error:
+        client.complete(SYSTEM_PROMPT, USER_PROMPT, response_schema=SQL_RESPONSE_SCHEMA)
+    assert error.value.status_code == status
+    assert len(requests) == 1
+    assert "private-provider-diagnostic" not in str(error.value)
+    if status == 404:
+        assert "JSON Schema" in str(error.value)
+
+
+def test_invalid_response_schema_fails_before_api_call(make_client):
+    client, requests, _, _ = make_client()
+    with pytest.raises(ValueError, match="response_schema"):
+        client.complete(SYSTEM_PROMPT, USER_PROMPT, response_schema="not-a-schema")
+    assert requests == []
 
 
 @pytest.mark.parametrize(

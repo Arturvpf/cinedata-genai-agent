@@ -31,6 +31,10 @@ A instalação e a leitura da configuração não enviam chamadas ao OpenRouter 
 
 O `OpenRouterClient`, em `src/cinedata/llm.py`, utiliza o SDK OpenAI instalado com a base URL `https://openrouter.ai/api/v1` e a chave OpenRouter de `Settings`. O método `complete` envia uma mensagem `system` e uma mensagem `user` pelo endpoint de Chat Completions e devolve texto. A inicialização não realiza requisições. O cliente pode ser reutilizado e não conserva histórico de conversas.
 
+O argumento opcional `response_schema` permite solicitar JSON estruturado. Quando informado, a requisição inclui `response_format.type=json_schema`, `strict=true` e `provider.require_parameters=true`. O agente usa `SQL_RESPONSE_SCHEMA`, definido em `prompts.py`, para a geração e a única correção SQL: um objeto com a propriedade obrigatória `sql`, do tipo string, sem propriedades adicionais. A redação omite esse argumento e continua recebendo texto livre. Clientes alternativos que implementem `TextCompletionClient` devem aceitar o argumento opcional.
+
+O roteamento exige suporte aos parâmetros, conforme a [documentação de saídas estruturadas do OpenRouter](https://openrouter.ai/docs/guides/features/structured-outputs). A aplicação continua validando a resposta e o SQL localmente, porque o cumprimento do esquema varia por provedor e não garante SQL seguro ou semanticamente correto. Um modelo sem provedor compatível pode produzir erro HTTP; não há uma segunda chamada automática para tentar novamente em texto livre.
+
 O exemplo abaixo faz **uma chamada real** quando executado com uma chave válida. Os testes automatizados usam transporte HTTP simulado e não consomem cota.
 
 ```python
@@ -272,11 +276,13 @@ O prazo de execução se aplica separadamente a cada tentativa SQLite; não é u
 
 `CineDataAgent.ask(pergunta)` realiza o mesmo fluxo protegido de `query` e acrescenta uma resposta em `AgentResult.answer`. Normalmente faz uma chamada adicional ao modelo para resultados com linhas, sem repetição automática. Contagens escalares reconhecidas são redigidas localmente, como “Resultado da contagem: 95.645.”, dispensando essa chamada. O retorno conserva SQL, colunas, linhas originais e indicadores de correção e resultado parcial. Para nenhuma linha, devolve localmente “Nenhum resultado foi encontrado para esta consulta.”.
 
-`local_count_answer` reconhece uma única expressão `COUNT(...)` em um `SELECT` com `FROM`, resultado não parcial de uma linha/coluna e valor inteiro não negativo. Considera tokens para distinguir literais, comentários, aliases e parênteses. Grupos, janelas, composições, expressões como `COUNT(*) + 1` e outros formatos seguem para redação pelo modelo. A mensagem local usa o valor executado, sem deduzir unidade, filtro ou total do catálogo pela pergunta ou pelo alias. Zero é apresentado como zero; outros agregados com zero ou `NULL` continuam no fluxo de redação.
+`local_count_answer` reconhece uma única expressão `COUNT(...)` em um `SELECT` com `FROM`, resultado não parcial de uma linha/coluna e valor inteiro não negativo. Considera tokens para distinguir literais, comentários, aliases e parênteses. A mensagem local usa o valor executado, sem deduzir unidade, filtro ou total do catálogo pela pergunta ou pelo alias. Zero é apresentado como zero; outros agregados com zero ou `NULL` continuam no fluxo de redação.
+
+`local_grouped_count_answer` reconhece `SELECT` simples com `GROUP BY`, duas colunas e uma única expressão `COUNT(...)`, em qualquer posição, com alias opcional. Para até 50 linhas, lista os rótulos e as contagens na ordem retornada pelo banco. Rótulos aceitos são texto de até mil caracteres, inteiro ou `NULL`; contagens devem ser inteiros não negativos. Textos são apresentados entre aspas, com controles escapados; `NULL` aparece como ausência de informação. Resultados parciais conservam o aviso, sem somar grupos ou afirmar um total global. A resposta inteira deve caber em vinte mil caracteres. CTEs, janelas, composições, cálculos como `COUNT(*) + 1`, valores não suportados e resultados maiores seguem para redação pelo modelo. Nenhuma linha é silenciosamente omitida para forçar a resposta local.
 
 Com `--debug`, os logs mostram a duração da geração, da eventual correção, da redação quando utilizada e da pergunta inteira. `elapsed_seconds` continua correspondendo apenas à execução SQLite final. As medições registram duração, sem incluir pergunta, SQL, valores, chave ou resposta.
 
-O exemplo abaixo faz **chamadas reais** com uma chave válida: normalmente duas (geração de SQL e redação), ou três se houver a correção única. Resultados vazios e contagens escalares reconhecidas dispensam a redação. A CLI usa o mesmo método no modo padrão.
+O exemplo abaixo faz **chamadas reais** com uma chave válida: normalmente duas (geração de SQL e redação), ou três se houver a correção única. Resultados vazios e contagens escalares ou agrupadas reconhecidas dispensam a redação. A CLI usa o mesmo método no modo padrão.
 
 ```python
 from cinedata.agent import CineDataAgent

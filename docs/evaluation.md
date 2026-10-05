@@ -6,7 +6,7 @@ Essas consultas são referências para conferir dados e critérios. Executá-las
 
 ## Verificação realizada
 
-Na revisão de 05/10/2026, as 22 referências executaram no banco fornecido sem falhas, sem resultado parcial e sem chamadas ao modelo. O tamanho e a data de modificação do arquivo SQLite permaneceram iguais. A suíte automatizada passou com 636 testes, incluindo os casos de avaliação. A amostra separada de chamadas ao modelo e suas limitações estão em [project-review.md](project-review.md).
+Na revisão de 05/10/2026, as 22 referências executaram no banco fornecido sem falhas, sem resultado parcial e sem chamadas ao modelo. O tamanho e a data de modificação do arquivo SQLite permaneceram iguais. Após as melhorias de saída estruturada e resposta local para contagens agrupadas, a suíte automatizada passou com 668 testes, incluindo os casos de avaliação. A amostra separada de chamadas ao modelo e suas limitações estão em [project-review.md](project-review.md).
 
 Com a referência temporal fixada em 2026-10-04, a consulta de atores retornou Eric Roberts com 71 filmes. A consulta de dupla retornou Joe Anoa'i e Kevin Dunn com 37 filmes. Esses valores descrevem este arquivo e os critérios definidos; podem mudar com outra versão do banco.
 
@@ -97,4 +97,4 @@ except CineDataError as error:
     print(error)
 ```
 
-Depois da conferência dos dados, a resposta em português pode ser avaliada com o modo padrão da CLI ou com `agent.ask`, que normalmente acrescenta a redação para resultados não vazios. Contagens escalares reconhecidas são respondidas localmente. Verifique se a resposta preserva valores, unidades e avisos de limitação. Os testes não disparam essa avaliação externa automaticamente.
+Depois da conferência dos dados, a resposta em português pode ser avaliada com o modo padrão da CLI ou com `agent.ask`, que normalmente acrescenta a redação para resultados não vazios. Contagens escalares e agrupadas reconhecidas são respondidas localmente. Verifique se a resposta preserva valores, unidades e avisos de limitação. Os testes não disparam essa avaliação externa automaticamente.

@@ -13,6 +13,18 @@ MAX_SCHEMA_CHARS = 60_000
 MAX_SQL_ERROR_CHARS = 2_000
 MAX_CORRECTION_PROMPT_CHARS = 100_000
 
+SQL_RESPONSE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "sql": {
+            "type": "string",
+            "description": "Uma consulta SQLite SELECT ou WITH de leitura, sem explicações.",
+        },
+    },
+    "required": ["sql"],
+    "additionalProperties": False,
+}
+
 SQL_SYSTEM_PROMPT = """Você é o agente Text-to-SQL da CineData Analytics.
 Gere uma única consulta SQLite de leitura para responder à pergunta nos dados.
 

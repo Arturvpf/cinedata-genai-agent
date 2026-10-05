@@ -15,7 +15,7 @@ O núcleo solicitado está implementado: perguntas em linguagem natural, geraç�
 | Sugestão de modelo com tool calling | A aplicação controla geração textual, validação e execução do SQL | Tool calling é uma sugestão no PDF; a implementação usa um fluxo explícito |
 | Banco `cinerocket.db` e dez tabelas dimensionais | SQLite via biblioteca padrão; esquema, PKs e FKs obtidos por introspecção | As dez tabelas de dados foram encontradas; `alembic_version` fica fora das consultas do agente |
 | GitHub e README para execução | Repositório configurado, histórico com 22 commits nesta revisão, instalação e configuração documentadas | Implementado |
-| Planejamento das chamadas ao modelo | Sem chamadas na inicialização; correção limitada; contexto de resultados limitado; contagens locais e cache de SQL | Implementado; a amostra real desta revisão consumiu cinco chamadas |
+| Planejamento das chamadas ao modelo | Sem chamadas na inicialização; correção limitada; contexto de resultados limitado; contagens locais e cache de SQL | Implementado; a amostra real inicial desta revisão consumiu cinco chamadas |
 | Interface de chat | CLI interativa e modo de pergunta única | Suficiente; o PDF dispensa interface de chat |
 
 Interface web, gráficos, memória de conversa, fallback, busca semântica e conexão ao Databricks aparecem como possibilidades adicionais no enunciado. Sua ausência não impede a entrega principal. Guardrails, avaliação e cache de SQL já foram incluídos como melhorias.
@@ -84,6 +84,40 @@ Após receber o roteiro, o usuário informou que todos os cenários funcionaram 
 - Pedido de dez filmes com `--max-rows 3`, exibindo três linhas e o aviso de resultado parcial.
 
 Este registro se baseia na confirmação do usuário. Não foram fornecidos tempos, SQL ou saídas completas dessas execuções, portanto não entram nas medições de latência. O sucesso relatado amplia a validação funcional; a falha observada na amostra instrumentada permanece como evidência de que o comportamento do modelo pode variar.
+
+## Melhoria após investigar a falha de formato
+
+A falha inicial não se repetiu em três novas chamadas de geração antes da alteração. O roteador escolheu três modelos diferentes; dois retornaram JSON dentro de Markdown, que o extrator já aceitava. Como a saída bruta do incidente original não está disponível, sua causa exata permanece desconhecida.
+
+A geração e a correção de SQL passaram a solicitar JSON Schema pela API, com `sql` obrigatório e sem campos adicionais, exigindo provedor compatível. Isso reduz a dependência de instruções de formato escritas apenas no prompt. A redação permanece em texto livre. Os guardrails e a política de uma única correção de erro SQLite continuam ativos; saídas inválidas ou perigosas não são executadas, mesmo se o provedor ignorar o esquema. A integração segue a [documentação de saídas estruturadas do OpenRouter](https://openrouter.ai/docs/guides/features/structured-outputs).
+
+**643 testes passaram** após a mudança. Os novos casos verificam a requisição HTTP estruturada, o uso do esquema na geração e na correção, a redação em texto livre, erros de incompatibilidade sem repetição automática e a rejeição de conteúdo inválido ou de escrita.
+
+Na validação real posterior, as duas requisições de geração retornaram objetos JSON válidos:
+
+| Pergunta | Fluxo e tempo total | Conferência |
+| --- | --- | --- |
+| Filmes por gênero, incluindo gêneros sem filmes | `ask`, 78,500 s; inclui redação | 19 gêneros e contagens iguais à referência; ordenação alfabética, permitida pela pergunta; resposta final preservou os valores |
+| Cinco filmes mais populares | `query`, 4,547 s; sem redação | Cinco títulos e valores de popularidade iguais à referência, na mesma ordem; o modelo acrescentou o identificador do filme |
+
+Nenhuma dessas duas consultas precisou da correção SQL. A comparação considerou as colunas relevantes e a ordenação solicitada, em vez de exigir aliases ou formatos de linhas idênticos. Tamanho e data de modificação do banco permaneceram iguais. Foram três chamadas de diagnóstico antes da alteração e três chamadas na validação posterior, incluindo a redação por gênero.
+
+O teste posterior confirmou o funcionamento da pergunta que havia falhado, mas não prova que todos os provedores sempre cumprirão o formato. Também mostrou uma espera superior a um minuto; saída estruturada não estabelece um prazo total nem resolve por si só a latência da redação.
+
+## Redução da espera em contagens agrupadas
+
+Após observar a demora da redação, foi acrescentada uma resposta local para contagens agrupadas simples. A geração de SQL continua usando o modelo e o executor protegido consulta o banco; a lista final de rótulos e contagens é montada diretamente dos resultados. São aceitas duas colunas, uma delas `COUNT(...)`, até 50 linhas e valores limitados. O aviso de resultado parcial é preservado. Formatos mais complexos continuam usando a redação pelo modelo.
+
+Na nova execução da mesma pergunta de gêneros, com `openrouter/free`:
+
+| Execução | Tempo total | Uso do modelo |
+| --- | --- | --- |
+| Primeira pergunta | 8,656 s | Uma chamada de geração, de 7,203 s; nenhuma redação |
+| Repetição na mesma sessão | 1,516 s | Nenhuma chamada; SQL reutilizado com nova leitura do banco |
+
+As duas execuções retornaram os mesmos 19 gêneros e contagens da referência. O banco permaneceu com o mesmo tamanho e data de modificação. Essas medições foram feitas depois da execução de 78,5 s documentada acima, sob condições de provedor diferentes; demonstram a eliminação da chamada de redação, mas não estabelecem uma média nem uma redução percentual garantida.
+
+**668 testes passaram.** Os testes adicionais verificam contagens zero, rótulos nulos, preservação dos dados, atualização na repetição, limites, caracteres de controle, posição da contagem nas colunas e manutenção do aviso de resultado parcial na CLI.
 
 ## Limitações e preparação da demonstração
 

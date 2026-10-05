@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 import math
 
-from cinedata._sql_lexer import tokenize_sql
+from cinedata._sql_lexer import SqlToken, tokenize_sql
 from cinedata.exceptions import QueryBlockedError
 from cinedata.models import AgentResult, PromptMessages, SQLiteValue
 
@@ -60,6 +60,42 @@ class AnswerPrompt:
     context_limited: bool
 
 
+def _select_expressions(tokens: list[SqlToken]) -> list[list[SqlToken]]:
+    """Separe projeções de SELECT simples, respeitando aspas e subexpressões."""
+    if not tokens or tokens[0].kind != "word" or tokens[0].text.upper() != "SELECT":
+        return []
+    expressions: list[list[SqlToken]] = [[]]
+    for token in tokens[1:]:
+        if token.depth == 0 and token.kind == "word" and token.text.upper() == "FROM":
+            return expressions
+        if token.depth == 0 and token.kind == "symbol" and token.text == ",":
+            expressions.append([])
+        else:
+            expressions[-1].append(token)
+    return []
+
+
+def _is_count_expression(tokens: list[SqlToken]) -> bool:
+    """Reconheça COUNT(...) com alias opcional, sem cálculo ou janela adicional."""
+    if (
+        len(tokens) < 4 or tokens[0].kind not in {"word", "identifier"}
+        or tokens[0].text.upper() != "COUNT"
+        or tokens[1].kind != "symbol" or tokens[1].text != "("
+    ):
+        return False
+    closing = next(
+        (index for index, token in enumerate(tokens[2:], 2)
+         if token.kind == "symbol" and token.text == ")" and token.depth == 0),
+        None,
+    )
+    if closing is None:
+        return False
+    tail = tokens[closing + 1:]
+    if len(tail) == 2 and tail[0].kind == "word" and tail[0].text.upper() == "AS":
+        tail = tail[1:]
+    return not tail or (len(tail) == 1 and tail[0].kind in {"word", "identifier"})
+
+
 def local_count_answer(result: AgentResult) -> str | None:
     """Redija uma contagem escalar já executada sem outra chamada ao modelo.
 
@@ -77,46 +113,61 @@ def local_count_answer(result: AgentResult) -> str | None:
         tokens = tokenize_sql(result.sql)
     except QueryBlockedError:
         return None
+    expressions = _select_expressions(tokens)
     if (
-        len(tokens) < 6
-        or tokens[0].kind != "word" or tokens[0].text.upper() != "SELECT"
-        or tokens[1].kind not in {"word", "identifier"}
-        or tokens[1].text.upper() != "COUNT" or tokens[2].text != "("
-        or any(
-            token.depth == 0 and token.kind == "word"
-            and token.text.upper() in {"GROUP", "HAVING", "WINDOW", "UNION", "INTERSECT", "EXCEPT"}
-            for token in tokens
-        )
-    ):
-        return None
-    closing = next(
-        (index for index, token in enumerate(tokens[3:], 3)
-         if token.text == ")" and token.depth == 0 and token.kind == "symbol"),
-        None,
-    )
-    if closing is None:
-        return None
-    position = closing + 1
-    if (
-        position < len(tokens) and tokens[position].kind == "word"
-        and tokens[position].text.upper() == "AS"
-    ):
-        position += 1
-        if position >= len(tokens) or tokens[position].kind not in {"word", "identifier"}:
-            return None
-        position += 1
-    elif (
-        position < len(tokens) and tokens[position].kind in {"word", "identifier"}
-        and tokens[position].text.upper() != "FROM"
-    ):
-        position += 1
-    if (
-        position >= len(tokens) or tokens[position].kind != "word"
-        or tokens[position].text.upper() != "FROM"
+        len(expressions) != 1 or not _is_count_expression(expressions[0])
+        or any(token.depth == 0 and token.kind == "word" and token.text.upper() in {
+            "GROUP", "HAVING", "WINDOW", "UNION", "INTERSECT", "EXCEPT",
+        } for token in tokens)
     ):
         return None
     count = f"{result.rows[0][0]:,}".replace(",", ".")
     return f"Resultado da contagem: {count}."
+
+
+def local_grouped_count_answer(result: AgentResult) -> str | None:
+    """Liste rótulos e contagens já executadas, sem inferir unidades ou totais."""
+    if len(result.columns) != 2 or not 1 <= len(result.rows) <= MAX_ANSWER_ROWS:
+        return None
+    try:
+        tokens = tokenize_sql(result.sql)
+    except QueryBlockedError:
+        return None
+    outer_words = [token.text.upper() for token in tokens
+                   if token.depth == 0 and token.kind == "word"]
+    if (
+        any(word in outer_words for word in {"WINDOW", "OVER", "UNION", "INTERSECT", "EXCEPT"})
+        or not any(left == "GROUP" and right == "BY"
+                   for left, right in zip(outer_words, outer_words[1:]))
+    ):
+        return None
+    expressions = _select_expressions(tokens)
+    positions = [index for index, expression in enumerate(expressions)
+                 if _is_count_expression(expression)]
+    if len(expressions) != 2 or len(positions) != 1:
+        return None
+    count_index = positions[0]
+    lines = ["Contagens retornadas:"]
+    if result.truncated:
+        lines = [PARTIAL_RESULT_NOTICE, "", *lines]
+    for row in result.rows:
+        if len(row) != 2:
+            return None
+        label, count = row[1 - count_index], row[count_index]
+        if type(count) is not int or count < 0:
+            return None
+        if label is None:
+            text = "NULL (sem informação)"
+        elif isinstance(label, str) and len(label) <= MAX_ANSWER_CELL_CHARS:
+            text = json.dumps(label, ensure_ascii=False)
+        elif type(label) is int:
+            text = str(label)
+        else:
+            return None
+        number = f"{count:,}".replace(",", ".")
+        lines.append(f"- {text}: {number}")
+    answer = "\n".join(lines)
+    return answer if len(answer) <= MAX_ANSWER_CHARS else None
 
 
 def _context_value(value: SQLiteValue) -> tuple[object, bool]:

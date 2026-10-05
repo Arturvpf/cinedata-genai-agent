@@ -165,6 +165,22 @@ def test_interactive_eof_is_normal_exit(cli_setup, monkeypatch, capsys):
     client.complete.assert_not_called()
 
 
+def test_grouped_count_cli_formats_partial_result_with_one_call(cli_setup, capsys):
+    env_file, _, client = cli_setup
+    client.complete.side_effect = [
+        "SELECT titulo, COUNT(*) FROM dim_movies GROUP BY titulo ORDER BY titulo",
+    ]
+    assert cli.main(args_for(env_file, "--max-rows", "2", "--question", "Por título")) == 0
+    output = capsys.readouterr()
+    assert "Resultado parcial:" in output.out
+    assert '- "Filme A": 1' in output.out
+    assert '- "Filme B": 1' in output.out
+    assert "Filme C" not in output.out
+    assert not output.err
+    client.complete.assert_called_once()
+    assert client.closed
+
+
 @pytest.mark.parametrize("during_request", [False, True])
 def test_ctrl_c_closes_client_and_returns_130(cli_setup, monkeypatch, capsys, during_request):
     env_file, _, client = cli_setup

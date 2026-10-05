@@ -15,6 +15,7 @@ from cinedata.answers import (
     PARTIAL_RESULT_NOTICE,
     build_answer_prompt,
     local_count_answer,
+    local_grouped_count_answer,
 )
 from cinedata.database import (
     DEFAULT_MAX_ROWS,
@@ -37,7 +38,7 @@ from cinedata.exceptions import (
 )
 from cinedata.guardrails import sanitize_sql, validate_sql
 from cinedata.models import AgentResult, PromptMessages, QueryResult
-from cinedata.prompts import build_sql_correction_prompt, build_sql_prompt
+from cinedata.prompts import SQL_RESPONSE_SCHEMA, build_sql_correction_prompt, build_sql_prompt
 from cinedata.schema import format_schema_for_llm, inspect_schema
 
 
@@ -63,6 +64,7 @@ class TextCompletionClient(Protocol):
 
     def complete(
         self, system_prompt: str, user_prompt: str, *, max_tokens: int = 2_048,
+        response_schema: dict[str, object] | None = None,
     ) -> str: ...
 
 
@@ -135,7 +137,9 @@ class CineDataAgent:
     def _generate_sql(self, messages: PromptMessages) -> str:
         logger.info("Iniciando geração de SQL.")
         started = monotonic()
-        response = self._client.complete(messages.system, messages.user)
+        response = self._client.complete(
+            messages.system, messages.user, response_schema=SQL_RESPONSE_SCHEMA,
+        )
         logger.info("Geração de SQL concluída em %.3f s.", monotonic() - started)
         return _validated_sql(response)
 
@@ -192,7 +196,9 @@ class CineDataAgent:
                 reference_date=reference, max_rows=self.max_rows,
             )
             started = monotonic()
-            response = self._client.complete(messages.system, messages.user)
+            response = self._client.complete(
+                messages.system, messages.user, response_schema=SQL_RESPONSE_SCHEMA,
+            )
             logger.info("Correção de SQL recebida em %.3f s.", monotonic() - started)
             sql = _validated_sql(response)
             corrected = True
@@ -216,7 +222,7 @@ class CineDataAgent:
     def ask(self, question: str) -> AgentResult:
         """Consulte e redija uma resposta, sem repetir a chamada de redação.
 
-        Resultados vazios e contagens escalares recebem uma mensagem local.
+        Resultados vazios e contagens reconhecidas recebem uma mensagem local.
         Falhas na redação conservam o resultado em AnswerGenerationError.result.
         Use query para obter os dados sem enviá-los ao modelo de redação.
         """
@@ -227,6 +233,10 @@ class CineDataAgent:
         if count_answer is not None:
             logger.info("Contagem redigida localmente, sem chamada adicional ao modelo.")
             return replace(result, answer=count_answer)
+        grouped_answer = local_grouped_count_answer(result)
+        if grouped_answer is not None:
+            logger.info("Contagens por grupo redigidas localmente, sem chamada adicional ao modelo.")
+            return replace(result, answer=grouped_answer)
         try:
             prompt = build_answer_prompt(result)
             logger.info("Iniciando redação com contexto limitado de resultados.")

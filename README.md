@@ -49,7 +49,23 @@ python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-O `requirements.txt` instala o pacote local em modo editável e os testes. As versões diretas estão no `pyproject.toml`: `openai==3.24.0`, `python-dotenv==1.2.4` e `pytest==9.1.1`. Não é necessário instalar servidor de banco de dados.
+O `requirements.txt` instala o pacote local em modo editável e as dependências de testes. As versões diretas estão no `pyproject.toml`:
+
+| Dependência | Versão | Uso |
+| --- | --- | --- |
+| [openai](https://pypi.org/project/openai/3.24.0/) | `3.24.0` | Cliente compatível com a API do OpenRouter |
+| [python-dotenv](https://pypi.org/project/python-dotenv/1.2.4/) | `1.2.4` | Leitura do `.env` |
+| [pytest](https://pypi.org/project/pytest/9.1.1/) | `9.1.1` | Execução dos testes |
+| [httpx2](https://pypi.org/project/httpx2/2.13.1/) | `2.13.1` | Transporte HTTP simulado nos testes do SDK |
+
+O `httpx2` é importado diretamente pelos testes e também é uma dependência do SDK nessa versão. O instalador resolve as demais dependências indiretas; o projeto não fixa todas elas em um arquivo de lock. O `setuptools>=68` é usado na construção do pacote e instalado pelo pip no ambiente de construção.
+
+O módulo `sqlite3` faz parte do Python; não instale um pacote `sqlite3` pelo pip. Não é necessário instalar servidor de banco de dados. Para conferir as dependências instaladas e a versão do SQLite:
+
+```bash
+python -m pip check
+python -c "import sqlite3; print(sqlite3.sqlite_version)"
+```
 
 ## Banco e OpenRouter
 
@@ -137,16 +153,25 @@ Na pergunta única, os códigos de saída são `0` para sucesso, `1` para falha 
 
 ### Exemplos de perguntas
 
+Os exemplos abaixo cobrem as 14 análises do enunciado e a variante de receita em USD. Moeda, tipo de nota e denominador da margem estão explícitos para facilitar a conferência.
+
 - Quais são os dez filmes com maior receita em R$?
 - Quais são os dez filmes com maior receita em USD?
-- Qual é o lucro médio por gênero, considerando receita e orçamento informados?
+- Qual é o lucro médio em USD por gênero, considerando somente filmes com receita e orçamento informados?
+- Quais são os dez filmes com maior margem percentual de lucro sobre orçamento, com receita informada e orçamento positivo, em USD?
 - Quais são os cinco filmes mais populares?
+- Quais são os dez filmes com maior diferença absoluta entre as notas TMDB e IMDb?
+- Qual é a nota média IMDb por ano de lançamento, em ordem de ano?
 - Qual ator participou de mais filmes lançados nos últimos cinco anos?
-- Quais diretores têm maior nota média IMDb, com pelo menos cinco filmes avaliados?
-- Quantos filmes existem por gênero?
-- Qual produtora tem o maior lucro total em USD?
-- Quais são os dez filmes mais avaliados pelos usuários?
-- Quais filmes têm maior diferença absoluta entre nota dos usuários e nota IMDb?
+- Quais são os dez diretores com maior nota média IMDb, considerando pelo menos cinco filmes com nota IMDb informada?
+- Qual dupla de ator e diretor trabalhou junta em mais filmes?
+- Quantos filmes existem por gênero, incluindo gêneros sem filmes?
+- Qual produtora tem o maior lucro total em USD, considerando filmes com receita e orçamento informados?
+- Qual gênero tem a maior margem percentual média de lucro sobre orçamento em USD, entre filmes com receita informada e orçamento positivo?
+- Quais são os dez filmes mais avaliados pelos usuários, usando a quantidade agregada de avaliações?
+- Quais são os dez filmes com maior diferença absoluta entre nota média dos usuários e nota IMDb?
+
+O conjunto completo de [22 perguntas e consultas de referência](tests/evaluation_questions.json) acrescenta cinco análises e duas variações de sinônimos. Veja os critérios e como comparar respostas em [docs/evaluation.md](docs/evaluation.md). Na CLI, “últimos cinco anos” usa a data da execução; a consulta de referência usa `2026-10-04` para permitir reprodução.
 
 Esses comandos e perguntas usam a API real quando executados com chave válida. Consultas extensas de elenco/equipe podem exigir `--query-timeout 30`.
 
@@ -227,7 +252,7 @@ Quando a pergunta não informa moeda, o critério do agente é USD. Lucro é `re
 100.0 × (receita - orçamento) / orçamento
 ```
 
-A margem exige orçamento positivo e receita não nula, com divisão protegida por `NULLIF`. Finanças ausentes não viram zero. Pedidos em BRL usam os campos BRL sem misturar moedas. Filmes com vários gêneros ou produtoras contribuem para cada grupo; não há percentuais para ratear os valores.
+A margem exige orçamento positivo e receita não nula, com divisão protegida por `NULLIF`. Esse indicador mede retorno sobre orçamento (ROI); uma pergunta sobre margem sobre receita deve solicitar esse denominador explicitamente. Para gênero, calcula-se a média das margens individuais dos filmes elegíveis. Finanças ausentes não viram zero. Pedidos em BRL usam os campos BRL sem misturar moedas. Filmes com vários gêneros ou produtoras contribuem para cada grupo; não há percentuais para ratear os valores.
 
 Papéis vêm de `dim_people.tipo_pessoa`, com valores observados `Ator`, `Diretor` e `Roteirista`. `dim_reviews` contém indicadores agregados; `movie_reviews` contém avaliações individuais. As notas observadas de usuários vão de 0 a 10. Para “últimos N anos”, usa-se uma janela móvel inclusiva até a referência; a avaliação temporal fixa uma data para reprodução.
 

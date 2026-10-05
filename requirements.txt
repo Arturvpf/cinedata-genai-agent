@@ -1,3 +1,3 @@
-# Instala o pacote local, suas dependências e o pytest.
+# Instala o pacote local e suas dependências de execução e testes.
 # As versões ficam definidas no pyproject.toml.
 -e .[test]

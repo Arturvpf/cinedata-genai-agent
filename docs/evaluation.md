@@ -1,12 +1,12 @@
 # Avaliação das perguntas
 
-O conjunto `tests/evaluation_questions.json` contém 21 perguntas com identificador, categoria, critérios de revisão e SQL de referência escrito a partir do esquema real. Ele cobre as perguntas principais do enunciado, cinco perguntas adicionais e duas variações de sinônimos para receita.
+O conjunto `tests/evaluation_questions.json` contém 22 perguntas com identificador, categoria, critérios de revisão e SQL de referência escrito a partir do esquema real. Ele cobre os 14 exemplos do enunciado, incluindo o ranking de receita em R$, uma variante desse ranking em USD, cinco perguntas adicionais e duas variações de sinônimos para receita.
 
 Essas consultas são referências para conferir dados e critérios. Executá-las com sucesso não mede a qualidade do SQL gerado pelo modelo nem da resposta em português. Os testes automatizados verificam referências em SQLite real, com dados controlados e sem API.
 
 ## Verificação realizada
 
-No banco fornecido, as 21 referências executaram sem falhas, sem resultado parcial e sem chamadas ao modelo. O tamanho e a data de modificação do arquivo SQLite permaneceram iguais. A suíte automatizada passou com 591 testes, incluindo os casos de avaliação.
+Na revisão de 05/10/2026, as 22 referências executaram no banco fornecido sem falhas, sem resultado parcial e sem chamadas ao modelo. O tamanho e a data de modificação do arquivo SQLite permaneceram iguais. A suíte automatizada passou com 636 testes, incluindo os casos de avaliação. A amostra separada de chamadas ao modelo e suas limitações estão em [project-review.md](project-review.md).
 
 Com a referência temporal fixada em 2026-10-04, a consulta de atores retornou Eric Roberts com 71 filmes. A consulta de dupla retornou Joe Anoa'i e Kevin Dunn com 37 filmes. Esses valores descrevem este arquivo e os critérios definidos; podem mudar com outra versão do banco.
 
@@ -18,6 +18,7 @@ Com as dependências instaladas e o ambiente virtual ativo, na raiz do projeto:
 python scripts/evaluate_reference_queries.py --list
 python scripts/evaluate_reference_queries.py
 python scripts/evaluate_reference_queries.py --case top_receita --show-results
+python scripts/evaluate_reference_queries.py --case top_receita_brl --show-results
 python scripts/evaluate_reference_queries.py --case ator_ultimos_cinco_anos --show-results
 python scripts/evaluate_reference_queries.py --case dupla_ator_diretor --timeout 60
 ```
@@ -34,7 +35,7 @@ O resumo registra execução, quantidade retornada e tempo, sem avaliar se o mod
 
 | Grupo | IDs | Critérios que precisam ser conferidos |
 | --- | --- | --- |
-| Bilheteria e finanças | `top_receita`, `lucro_medio_genero`, `top_margem` | USD; nulos; lucro = receita − orçamento; margem percentual sobre orçamento positivo |
+| Bilheteria e finanças | `top_receita`, `top_receita_brl`, `lucro_medio_genero`, `top_margem` | Moeda explícita; `receita_brl` para R$, sem conversão inventada; nulos; lucro = receita − orçamento; margem percentual sobre orçamento positivo |
 | Popularidade e engajamento | `top_popularidade`, `divergencia_tmdb_imdb`, `imdb_por_ano` | Popularidade separada de nota; diferença absoluta; média por ano |
 | Elenco e equipe | `ator_ultimos_cinco_anos`, `diretores_nota_minimo_cinco`, `dupla_ator_diretor` | Papéis na dimensão; ponte por filme; janela de datas; mínimo de filmes avaliados |
 | Gêneros e produtoras | `filmes_por_genero`, `produtora_maior_lucro`, `genero_maior_margem` | Identidades separadas de nomes; gênero sem filmes; soma de lucros; média de margens individuais |

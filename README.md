@@ -109,7 +109,17 @@ O modo padrão normalmente faz duas chamadas: geração de SQL e redação. Cont
 
 Na mesma sessão, o agente lembra até 32 consultas executadas com sucesso. Uma pergunta idêntica, com a mesma data de referência e limite de linhas, reutiliza o SQL e consulta novamente o banco. Linhas e respostas não ficam no cache. Repetir uma contagem reconhecida pode dispensar todas as chamadas ao modelo; outras respostas ainda podem precisar da redação. Ao reiniciar, mudar a data ou retirar uma consulta do cache, a geração volta a ser necessária.
 
-Para conferir uma demora, execute `python main.py --debug`: os logs mostram quanto demorou cada chamada ao modelo, quando o SQL foi reutilizado e o tempo total da pergunta, separado do tempo SQLite. A primeira consulta ainda depende da geração pelo modelo. Raw pode dispensar a redação também nas demais consultas.
+### Tempo de resposta e espera
+
+Depois de enviar a pergunta, aguarde a resposta ou a mensagem de erro antes de digitar outra. O modo padrão exibe o resultado ao final do processamento e pode ficar sem novas mensagens enquanto aguarda o modelo. Na sessão interativa, o próximo `>` indica que é possível fazer outra pergunta. Use `Ctrl+C` para interromper e encerrar a execução.
+
+**Não há uma média representativa de tempo de resposta.** Em uma amostra local com `openrouter/free`, a contagem do catálogo levou **2,8 s** e o ranking de receita em R$ levou **34,7 s**, incluindo uma correção de SQL. Uma terceira pergunta recebeu uma saída inválida e foi bloqueada após **4,0 s**. São três tentativas, sem repetições; esses valores não representam uma garantia nem uma média geral. Os resultados e as limitações estão na [revisão do projeto](docs/project-review.md).
+
+A espera depende do modelo, da rede, da consulta e do número de chamadas. Geração, eventual correção e redação são etapas separadas; por isso o total pode ultrapassar 30 segundos. O timeout de rede de 30 s vale para operações de rede, não para a pergunta inteira. `--query-timeout` controla apenas o SQLite. Análises extensas de elenco/equipe podem precisar de `--query-timeout 30`, mesmo quando a conexão com o modelo funciona normalmente.
+
+Para acompanhar as etapas, execute `python main.py --debug`: os logs mostram quanto demorou cada chamada ao modelo, quando o SQL foi reutilizado e o tempo total da pergunta, separado do tempo SQLite. A primeira consulta ainda depende da geração pelo modelo. `--raw` dispensa a redação, e repetir uma contagem já reconhecida na mesma sessão pode dispensar todas as chamadas ao modelo.
+
+### Apresentação dos resultados
 
 Raw/debug mostra colunas e linhas na mesma ordem, preservando nomes repetidos, e representa ausência por `NULL`. Textos são abreviados após 240 caracteres e BLOBs aparecem pelo tamanho, com aviso. Controles de terminal são escapados. A exibição não é uma exportação JSON; a API Python conserva os valores completos em `AgentResult.rows`.
 
@@ -117,6 +127,7 @@ Na pergunta única, os códigos de saída são `0` para sucesso, `1` para falha 
 
 ### Exemplos de perguntas
 
+- Quais são os dez filmes com maior receita em R$?
 - Quais são os dez filmes com maior receita em USD?
 - Qual é o lucro médio por gênero, considerando receita e orçamento informados?
 - Quais são os cinco filmes mais populares?
@@ -187,12 +198,13 @@ cinedata-genai-agent/
 │   ├── inspect_database.py         # Diagnóstico do banco sem API
 │   └── evaluate_reference_queries.py
 ├── tests/
-│   ├── evaluation_questions.json   # 21 perguntas, critérios e SQL
+│   ├── evaluation_questions.json   # 22 perguntas, critérios e SQL
 │   └── test_*.py                   # Testes automatizados
 └── docs/
     ├── database.md                 # Esquema e observações dos dados
     ├── evaluation.md               # Avaliação e comparação com modelo
-    └── implementation.md           # API Python e detalhes técnicos
+    ├── implementation.md           # API Python e detalhes técnicos
+    └── project-review.md           # Requisitos e validação com modelo real
 ```
 
 ## Banco e critérios de análise
@@ -250,9 +262,11 @@ A inspeção mostra esquema, contagens exatas e até três amostras por tabela, 
 
 A suíte usa bancos temporários e respostas simuladas, incluindo o SDK com transporte HTTP simulado. Verifica leitura, introspecção, guardrails, limites, configuração, integração, correção única, redação, CLI e referências de avaliação. Não depende de chave nem do banco da atividade.
 
-**Validação local: 634 testes passaram.** As 21 referências executaram no banco fornecido sem falhas, sem resultados parciais e sem alterar tamanho ou data de modificação do arquivo. O histórico incremental possui mais de quinze commits reais, feitos durante as etapas do desenvolvimento.
+**Validação local: 636 testes passaram.** As 22 referências executaram no banco fornecido sem falhas, sem resultados parciais e sem alterar tamanho ou data de modificação do arquivo. O histórico incremental possui mais de quinze commits reais, feitos durante as etapas do desenvolvimento.
 
-As referências verificam SQL e critérios conhecidos; não comprovam a qualidade do modelo externo. A avaliação de uma pergunta real, conferência de resultados e reprodução da data está em [docs/evaluation.md](docs/evaluation.md). Chamadas reais ao modelo não foram feitas durante a validação automatizada.
+As referências verificam SQL e critérios conhecidos; não comprovam a qualidade do modelo externo. A avaliação de uma pergunta real, conferência de resultados e reprodução da data está em [docs/evaluation.md](docs/evaluation.md). Os testes automatizados não fazem chamadas reais. Uma amostra separada de três perguntas ao modelo, com dois sucessos e uma falha, está documentada na [revisão de aderência e qualidade](docs/project-review.md).
+
+O usuário também confirmou sucesso em todos os cenários do roteiro manual: contagem e repetição, ranking, agrupamento por gênero, filtro por ano, resultado vazio, bloqueio de escrita e limite de linhas com aviso de resultado parcial. Essa confirmação está registrada na revisão, sem atribuir tempos às execuções que não foram medidos.
 
 ## Limitações e diagnóstico
 

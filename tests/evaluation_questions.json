@@ -7,6 +7,13 @@
     "reference_sql": "SELECT m.titulo, p.receita_usd FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.receita_usd IS NOT NULL ORDER BY p.receita_usd DESC, m.sk_movie_id LIMIT 10"
   },
   {
+    "id": "top_receita_brl",
+    "category": "bilheteria",
+    "question": "Quais são os dez filmes com maior receita em R$?",
+    "criteria": ["Usar receita_brl do banco, sem converter receita_usd por uma cotação inventada.", "Excluir receitas nulas, ordenar por receita decrescente e desempatar por sk_movie_id; retornar até dez filmes."],
+    "reference_sql": "SELECT m.titulo, p.receita_brl FROM dim_movies AS m JOIN fact_movies_performance AS p ON p.sk_movie_id = m.sk_movie_id WHERE p.receita_brl IS NOT NULL ORDER BY p.receita_brl DESC, m.sk_movie_id LIMIT 10"
+  },
+  {
     "id": "lucro_medio_genero",
     "category": "financas",
     "question": "Qual é o lucro médio em USD por gênero, considerando somente filmes com receita e orçamento informados?",

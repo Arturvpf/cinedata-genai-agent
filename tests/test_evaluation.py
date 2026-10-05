@@ -47,15 +47,19 @@ def evaluation_database(tmp_path: Path) -> Path:
             CREATE TABLE fact_movies_performance (
                 sk_movie_id INTEGER PRIMARY KEY REFERENCES dim_movies,
                 orcamento_usd REAL, receita_usd REAL,
-                popularidade REAL, nota_tmdb REAL, nota_imdb REAL
+                popularidade REAL, nota_tmdb REAL, nota_imdb REAL, receita_brl REAL
             );
-            INSERT INTO fact_movies_performance VALUES
+            INSERT INTO fact_movies_performance
+                (sk_movie_id, orcamento_usd, receita_usd, popularidade, nota_tmdb, nota_imdb)
+            VALUES
                 (1, 100, 200, 10, 8, 8), (2, 200, 50, 30, 9, 6),
                 (3, NULL, 500, NULL, NULL, 7), (4, 0, 100, 20, 5, 5),
                 (5, 100, NULL, 15, 4, NULL), (6, 100, 100, 25, 8, 9),
                 (7, 50, 200, 5, 8, 8), (8, 100, 100, 2, 10, 9),
                 (9, 120000000, 50000000, NULL, NULL, NULL),
                 (10, 120000000, NULL, NULL, NULL, NULL);
+            UPDATE fact_movies_performance SET receita_brl = CASE sk_movie_id
+                WHEN 1 THEN 1000 WHEN 2 THEN 2000 WHEN 3 THEN 2000 ELSE NULL END;
             CREATE TABLE dim_genres (sk_genre_id INTEGER PRIMARY KEY, nome_genero TEXT);
             INSERT INTO dim_genres VALUES (1, 'Drama'), (2, 'Comedia'), (3, 'Sem filmes');
             CREATE TABLE bridge_movie_genre (
@@ -133,6 +137,13 @@ def test_revenue_synonyms_have_same_values_and_stable_ties(evaluation_database):
         "Grande perda", "Gamma", "Alpha", "Eta", "Delta", "Zeta", "Theta", "Beta",
     ]
     assert "Receita ausente" not in [row[0] for row in revenue]
+
+
+def test_brl_ranking_uses_stored_currency_and_ignores_missing_values(evaluation_database):
+    result = run_case(evaluation_database, "top_receita_brl")
+    assert result.columns == ("titulo", "receita_brl")
+    assert result.rows == (("Beta", 2000.0), ("Gamma", 2000.0), ("Alpha", 1000.0))
+    assert result.rows != run_case(evaluation_database, "top_receita").rows
 
 
 def test_profit_averages_handle_nulls_and_multiple_genres(evaluation_database):
@@ -315,7 +326,8 @@ def test_script_reports_missing_database_without_traceback(tmp_path, capsys):
 
 
 def test_script_continues_after_query_error_and_marks_failure(evaluation_database, tmp_path, capsys):
-    data = json.loads(DATASET.read_text(encoding="utf-8"))[:2]
+    data = [item for item in json.loads(DATASET.read_text(encoding="utf-8"))
+            if item["id"] in {"top_receita", "lucro_medio_genero"}]
     data[0]["reference_sql"] = "SELECT missing FROM dim_movies"
     path = tmp_path / "missing_column.json"
     path.write_text(json.dumps(data), encoding="utf-8")

@@ -212,7 +212,11 @@ Os logs da geração registram inicialização, geração e rejeições, sem reg
 
 ## Consulta pelo agente
 
-O método `CineDataAgent.query` conecta a geração ao executor protegido: `pergunta → modelo → extração → guardrails → SQLite → resultado`. Ele usa as tabelas do mesmo esquema enviado ao modelo e abre uma conexão exclusiva de execução em modo somente leitura, com autorizador e limites de recursos. A criação do agente continua fazendo apenas a introspecção local, sem chamada ao modelo.
+O método `CineDataAgent.query` conecta a geração ao executor protegido: `pergunta → modelo → extração → guardrails → SQLite → resultado`. Quando há SQL disponível para a mesma pergunta na sessão, a geração é dispensada. Ele usa as tabelas do mesmo esquema enviado ao modelo e abre uma conexão exclusiva de execução em modo somente leitura, com autorizador e limites de recursos. A criação do agente continua fazendo apenas a introspecção local, sem chamada ao modelo.
+
+Cada instância guarda até 32 consultas SQL executadas com sucesso, incluindo a consulta final após correção. A chave contém a pergunta exata, a data de referência capturada e `max_rows`; ao atingir o limite, remove a consulta utilizada há mais tempo. O cache não guarda linhas, respostas, credenciais ou histórico de conversa e não persiste em disco. Uma repetição consulta novamente o SQLite, aplicando validação, autorizador e todos os limites. Falhas na execução retiram a consulta do cache e seguem a política normal de correção única; falhas de API não provocam retries. Uma falha apenas na redação conserva o SQL executado para a próxima pergunta do usuário.
+
+Use `agent.clear_sql_cache()` para solicitar nova geração nas próximas consultas. Reiniciar a sessão também descarta o cache. Se o esquema mudar, crie uma nova instância para renovar os metadados. O método público `generate_sql` sempre gera SQL com uma chamada e não consulta nem alimenta o cache, porque não executa a consulta.
 
 O exemplo abaixo faz **uma chamada real ao modelo** e executa a consulta gerada no banco local. Se ocorrer um erro recuperável de SQL, pode haver mais uma chamada para correção. O método `query` retorna os dados sem fazer uma chamada para redigir a resposta; use `ask`, descrito abaixo, para essa etapa adicional.
 
@@ -266,9 +270,13 @@ O prazo de execução se aplica separadamente a cada tentativa SQLite; não é u
 
 ## Resposta em português
 
-`CineDataAgent.ask(pergunta)` realiza o mesmo fluxo protegido de `query` e acrescenta uma resposta em `AgentResult.answer`. Para resultados com linhas, faz uma chamada adicional ao modelo, sem repetição automática. O resultado conserva o SQL executado, as colunas, as linhas originais e os indicadores de correção e resultado parcial. Para nenhuma linha, devolve localmente “Nenhum resultado foi encontrado para esta consulta.”, sem consumir uma chamada de redação. Agregações com uma linha contendo zero ou `NULL` seguem para redação normalmente.
+`CineDataAgent.ask(pergunta)` realiza o mesmo fluxo protegido de `query` e acrescenta uma resposta em `AgentResult.answer`. Normalmente faz uma chamada adicional ao modelo para resultados com linhas, sem repetição automática. Contagens escalares reconhecidas são redigidas localmente, como “Resultado da contagem: 95.645.”, dispensando essa chamada. O retorno conserva SQL, colunas, linhas originais e indicadores de correção e resultado parcial. Para nenhuma linha, devolve localmente “Nenhum resultado foi encontrado para esta consulta.”.
 
-O exemplo abaixo faz **chamadas reais** com uma chave válida: normalmente duas (geração de SQL e redação), ou três se houver a correção única. Resultados vazios dispensam a redação. A CLI usa o mesmo método no modo padrão.
+`local_count_answer` reconhece uma única expressão `COUNT(...)` em um `SELECT` com `FROM`, resultado não parcial de uma linha/coluna e valor inteiro não negativo. Considera tokens para distinguir literais, comentários, aliases e parênteses. Grupos, janelas, composições, expressões como `COUNT(*) + 1` e outros formatos seguem para redação pelo modelo. A mensagem local usa o valor executado, sem deduzir unidade, filtro ou total do catálogo pela pergunta ou pelo alias. Zero é apresentado como zero; outros agregados com zero ou `NULL` continuam no fluxo de redação.
+
+Com `--debug`, os logs mostram a duração da geração, da eventual correção, da redação quando utilizada e da pergunta inteira. `elapsed_seconds` continua correspondendo apenas à execução SQLite final. As medições registram duração, sem incluir pergunta, SQL, valores, chave ou resposta.
+
+O exemplo abaixo faz **chamadas reais** com uma chave válida: normalmente duas (geração de SQL e redação), ou três se houver a correção única. Resultados vazios e contagens escalares reconhecidas dispensam a redação. A CLI usa o mesmo método no modo padrão.
 
 ```python
 from cinedata.agent import CineDataAgent

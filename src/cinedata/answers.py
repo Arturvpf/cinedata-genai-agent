@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import json
 import math
 
+from cinedata._sql_lexer import tokenize_sql
+from cinedata.exceptions import QueryBlockedError
 from cinedata.models import AgentResult, PromptMessages, SQLiteValue
 
 
@@ -56,6 +58,65 @@ class AnswerPrompt:
 
     messages: PromptMessages
     context_limited: bool
+
+
+def local_count_answer(result: AgentResult) -> str | None:
+    """Redija uma contagem escalar já executada sem outra chamada ao modelo.
+
+    Reconheça apenas SELECT cuja única expressão é COUNT(...), sem grupos,
+    janelas ou composição de consultas. Nunca infira unidade, filtro ou total
+    do catálogo a partir da pergunta ou do alias gerado.
+    """
+    if (
+        result.truncated or len(result.columns) != 1 or len(result.rows) != 1
+        or len(result.rows[0]) != 1 or type(result.rows[0][0]) is not int
+        or result.rows[0][0] < 0
+    ):
+        return None
+    try:
+        tokens = tokenize_sql(result.sql)
+    except QueryBlockedError:
+        return None
+    if (
+        len(tokens) < 6
+        or tokens[0].kind != "word" or tokens[0].text.upper() != "SELECT"
+        or tokens[1].kind not in {"word", "identifier"}
+        or tokens[1].text.upper() != "COUNT" or tokens[2].text != "("
+        or any(
+            token.depth == 0 and token.kind == "word"
+            and token.text.upper() in {"GROUP", "HAVING", "WINDOW", "UNION", "INTERSECT", "EXCEPT"}
+            for token in tokens
+        )
+    ):
+        return None
+    closing = next(
+        (index for index, token in enumerate(tokens[3:], 3)
+         if token.text == ")" and token.depth == 0 and token.kind == "symbol"),
+        None,
+    )
+    if closing is None:
+        return None
+    position = closing + 1
+    if (
+        position < len(tokens) and tokens[position].kind == "word"
+        and tokens[position].text.upper() == "AS"
+    ):
+        position += 1
+        if position >= len(tokens) or tokens[position].kind not in {"word", "identifier"}:
+            return None
+        position += 1
+    elif (
+        position < len(tokens) and tokens[position].kind in {"word", "identifier"}
+        and tokens[position].text.upper() != "FROM"
+    ):
+        position += 1
+    if (
+        position >= len(tokens) or tokens[position].kind != "word"
+        or tokens[position].text.upper() != "FROM"
+    ):
+        return None
+    count = f"{result.rows[0][0]:,}".replace(",", ".")
+    return f"Resultado da contagem: {count}."
 
 
 def _context_value(value: SQLiteValue) -> tuple[object, bool]:

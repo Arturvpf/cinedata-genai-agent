@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import json
 import logging
 import sys
+from time import monotonic
 
 from cinedata.agent import CineDataAgent
 from cinedata.answers import EMPTY_RESULT_ANSWER, PARTIAL_RESULT_NOTICE
@@ -173,6 +174,7 @@ def _cli_logging(debug: bool) -> Iterator[None]:
 
 
 def _run_question(agent: CineDataAgent, question: str, *, raw: bool, debug: bool) -> int:
+    started = monotonic()
     try:
         result = agent.query(question) if raw else agent.ask(question)
     except AnswerGenerationError as error:
@@ -183,6 +185,8 @@ def _run_question(agent: CineDataAgent, question: str, *, raw: bool, debug: bool
     except (CineDataError, ValueError) as error:
         print(f"Erro: {_terminal_text(str(error))}", file=sys.stderr)
         return 1
+    finally:
+        logger.info("Tempo total da pergunta: %.3f s.", monotonic() - started)
     show_result(result, raw=raw, debug=debug)
     return 0
 

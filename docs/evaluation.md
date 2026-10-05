@@ -96,4 +96,4 @@ except CineDataError as error:
     print(error)
 ```
 
-Depois da conferência dos dados, a resposta em português pode ser avaliada com o modo padrão da CLI ou com `agent.ask`, que acrescenta a redação para resultados não vazios. Verifique se a resposta preserva valores, unidades e avisos de limitação. Os testes não disparam essa avaliação externa automaticamente.
+Depois da conferência dos dados, a resposta em português pode ser avaliada com o modo padrão da CLI ou com `agent.ask`, que normalmente acrescenta a redação para resultados não vazios. Contagens escalares reconhecidas são respondidas localmente. Verifique se a resposta preserva valores, unidades e avisos de limitação. Os testes não disparam essa avaliação externa automaticamente.

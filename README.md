@@ -77,7 +77,7 @@ Na raiz do projeto, com o ambiente virtual ativo:
 python main.py
 ```
 
-Digite uma pergunta e pressione Enter. Para encerrar, use `sair`, `exit`, `quit` ou EOF. `Ctrl+C` interrompe a operação e fecha o cliente. Perguntas em branco são ignoradas; cada pergunta é independente, sem memória das anteriores.
+Digite uma pergunta e pressione Enter. Para encerrar, use `sair`, `exit`, `quit` ou EOF. `Ctrl+C` interrompe a operação e fecha o cliente. Perguntas em branco são ignoradas. Cada pergunta é interpretada sem histórico de conversa; perguntas idênticas podem reutilizar o SQL que já funcionou na sessão.
 
 ### Pergunta única, raw e auditoria
 
@@ -94,7 +94,7 @@ python -m cinedata --help
 | --- | --- |
 | `--question "..."` | Executa uma pergunta e encerra; sem ela, abre a sessão interativa |
 | `--raw` | Mostra SQL e dados sem a chamada de redação ao modelo |
-| `--debug` | Mostra pergunta, SQL, linhas, quantidade, tempo SQLite e logs das etapas |
+| `--debug` | Mostra pergunta, SQL, linhas, quantidade, tempo SQLite e tempos de geração, correção, redação e total |
 | `--env-file CAMINHO` | Escolhe a configuração; padrão `.env` |
 | `--max-rows N` | Limita as linhas, de 1 a 1000; padrão 100 |
 | `--query-timeout SEGUNDOS` | Prazo por tentativa SQLite, maior que zero e até 60; padrão 5 |
@@ -105,7 +105,11 @@ Exemplo para consulta extensa e outra configuração:
 python main.py --env-file "config/local.env" --raw --max-rows 20 --query-timeout 30
 ```
 
-O modo padrão normalmente faz duas chamadas: geração de SQL e redação. Uma correção recuperável pode acrescentar uma chamada. `--raw` normalmente faz apenas a geração, podendo acrescentar a correção única. Resultados sem linhas recebem uma mensagem local, dispensando a redação.
+O modo padrão normalmente faz duas chamadas: geração de SQL e redação. Contagens escalares simples `SELECT COUNT(...) FROM ...` recebem uma resposta local, usando apenas a geração. Uma correção recuperável pode acrescentar uma chamada. `--raw` normalmente faz apenas a geração, podendo acrescentar a correção única. Resultados sem linhas também recebem uma mensagem local.
+
+Na mesma sessão, o agente lembra até 32 consultas executadas com sucesso. Uma pergunta idêntica, com a mesma data de referência e limite de linhas, reutiliza o SQL e consulta novamente o banco. Linhas e respostas não ficam no cache. Repetir uma contagem reconhecida pode dispensar todas as chamadas ao modelo; outras respostas ainda podem precisar da redação. Ao reiniciar, mudar a data ou retirar uma consulta do cache, a geração volta a ser necessária.
+
+Para conferir uma demora, execute `python main.py --debug`: os logs mostram quanto demorou cada chamada ao modelo, quando o SQL foi reutilizado e o tempo total da pergunta, separado do tempo SQLite. A primeira consulta ainda depende da geração pelo modelo. Raw pode dispensar a redação também nas demais consultas.
 
 Raw/debug mostra colunas e linhas na mesma ordem, preservando nomes repetidos, e representa ausência por `NULL`. Textos são abreviados após 240 caracteres e BLOBs aparecem pelo tamanho, com aviso. Controles de terminal são escapados. A exibição não é uma exportação JSON; a API Python conserva os valores completos em `AgentResult.rows`.
 
@@ -130,7 +134,9 @@ Esses comandos e perguntas usam a API real quando executados com chave válida. 
 ```mermaid
 flowchart TD
     U[Usuário pela CLI] --> P[Pergunta e esquema real]
-    P --> L[OpenRouter gera SQL]
+    P --> H{SQL disponível na sessão?}
+    H -->|Não| L[OpenRouter gera SQL]
+    H -->|Sim| DB
     L --> G[Extração e guardrails]
     G --> DB[SQLite somente leitura com limites]
     DB --> R[Resultado]
@@ -220,7 +226,7 @@ Há **uma única correção SQL** para erros recuperáveis de sintaxe, tabela ou
 | Rede | Timeout de operações de 30 s; não é prazo total da pergunta |
 | Contexto para redação | Até 50 linhas, textos de até 1000 caracteres e mensagens de até 50 mil caracteres |
 
-Resultados parciais recebem avisos. Dados brutos permanecem disponíveis quando o contexto de redação é reduzido. Se a redação falhar, a CLI mostra o SQL e os dados já obtidos; a API Python mantém esse resultado em `AnswerGenerationError.result`. Resultados vazios recebem mensagem local; uma agregação com uma linha contendo zero ou `NULL` continua sendo um resultado válido.
+Resultados parciais recebem avisos. Dados brutos permanecem disponíveis quando o contexto de redação é reduzido. Se a redação falhar, a CLI mostra o SQL e os dados já obtidos; a API Python mantém esse resultado em `AnswerGenerationError.result`. Resultados vazios e contagens escalares reconhecidas recebem mensagem local. Uma agregação com uma linha contendo zero ou `NULL` continua sendo um resultado válido; zero em uma contagem é apresentado como zero.
 
 Logs registram etapas, quantidade, tempo e classes de erros. Pergunta, SQL, valores e resposta aparecem apenas na apresentação solicitada pela CLI, não nos logs. Os métodos `generate_sql`, `query` e `ask`, as classes de erro e os detalhes técnicos estão em [docs/implementation.md](docs/implementation.md).
 
@@ -244,7 +250,7 @@ A inspeção mostra esquema, contagens exatas e até três amostras por tabela, 
 
 A suíte usa bancos temporários e respostas simuladas, incluindo o SDK com transporte HTTP simulado. Verifica leitura, introspecção, guardrails, limites, configuração, integração, correção única, redação, CLI e referências de avaliação. Não depende de chave nem do banco da atividade.
 
-**Validação local: 591 testes passaram.** As 21 referências executaram no banco fornecido sem falhas, sem resultados parciais e sem alterar tamanho ou data de modificação do arquivo. O histórico incremental possui mais de quinze commits reais, feitos durante as etapas do desenvolvimento.
+**Validação local: 634 testes passaram.** As 21 referências executaram no banco fornecido sem falhas, sem resultados parciais e sem alterar tamanho ou data de modificação do arquivo. O histórico incremental possui mais de quinze commits reais, feitos durante as etapas do desenvolvimento.
 
 As referências verificam SQL e critérios conhecidos; não comprovam a qualidade do modelo externo. A avaliação de uma pergunta real, conferência de resultados e reprodução da data está em [docs/evaluation.md](docs/evaluation.md). Chamadas reais ao modelo não foram feitas durante a validação automatizada.
 
@@ -263,8 +269,8 @@ A qualidade de SQL e redação depende do modelo. Guardrails impedem operações
 
 Receitas, orçamentos e notas frequentemente estão ausentes; os resultados refletem os dados disponíveis. Modelos e provedores podem retornar erros, limites ou formatos inválidos. Consultas extensas podem exceder o prazo, e limites de conteúdo não representam um teto para toda a memória do processo. Se o esquema mudar, crie uma nova sessão para renovar os metadados.
 
-O modelo recebe pergunta e esquema via OpenRouter; a redação também recebe uma parte limitada dos resultados. Raw dispensa apenas o envio para redação. Não há cache de respostas, memória entre perguntas ou fallback de modelo.
+O modelo recebe pergunta e esquema via OpenRouter quando é necessário gerar SQL; a redação também recebe uma parte limitada dos resultados. Raw dispensa o envio para redação. O cache guarda somente SQL na memória da sessão; não há histórico de conversa, cache de respostas nem fallback de modelo. Resposta vazia na primeira geração continua sendo apresentada como erro, sem repetição automática. Se desejar gerar novamente o SQL de uma pergunta, reinicie a sessão ou use `agent.clear_sql_cache()` na API Python.
 
 ## Possíveis melhorias
 
-Após avaliar a qualidade com o modelo escolhido: comparação semântica das respostas, cache, interface FastAPI ou Streamlit, gráficos e busca semântica em sinopses. Essas extensões não são necessárias para usar o projeto principal pela CLI.
+Após avaliar a qualidade com o modelo escolhido: comparação semântica das respostas, interface FastAPI ou Streamlit, gráficos e busca semântica em sinopses. Essas extensões não são necessárias para usar o projeto principal pela CLI.

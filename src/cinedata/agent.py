@@ -1,9 +1,11 @@
 """Geração, validação e execução de consultas a partir de perguntas."""
 
+from collections import OrderedDict
 from dataclasses import replace
 from datetime import date
 import logging
 from pathlib import Path
+from time import monotonic
 from typing import Protocol
 
 from cinedata.answers import (
@@ -12,6 +14,7 @@ from cinedata.answers import (
     MAX_ANSWER_CHARS,
     PARTIAL_RESULT_NOTICE,
     build_answer_prompt,
+    local_count_answer,
 )
 from cinedata.database import (
     DEFAULT_MAX_ROWS,
@@ -33,12 +36,13 @@ from cinedata.exceptions import (
     SchemaInspectionError,
 )
 from cinedata.guardrails import sanitize_sql, validate_sql
-from cinedata.models import AgentResult, QueryResult
+from cinedata.models import AgentResult, PromptMessages, QueryResult
 from cinedata.prompts import build_sql_correction_prompt, build_sql_prompt
 from cinedata.schema import format_schema_for_llm, inspect_schema
 
 
 logger = logging.getLogger(__name__)
+MAX_CACHED_SQL = 32
 
 
 def _validated_sql(response: str) -> str:
@@ -97,6 +101,7 @@ class CineDataAgent:
         self._client = client
         self.max_rows = max_rows
         self.reference_date = reference_date
+        self._sql_cache: OrderedDict[tuple[str, date, int], str] = OrderedDict()
         logger.info("Agente iniciado com %d tabelas de dados.", len(schema))
 
     @property
@@ -125,9 +130,18 @@ class CineDataAgent:
             ),
             max_rows=self.max_rows,
         )
+        return self._generate_sql(messages)
+
+    def _generate_sql(self, messages: PromptMessages) -> str:
         logger.info("Iniciando geração de SQL.")
+        started = monotonic()
         response = self._client.complete(messages.system, messages.user)
+        logger.info("Geração de SQL concluída em %.3f s.", monotonic() - started)
         return _validated_sql(response)
+
+    def clear_sql_cache(self) -> None:
+        """Descarte o SQL lembrado nesta instância, sem alterar o banco."""
+        self._sql_cache.clear()
 
     def _execute_sql(self, sql: str, timeout: float) -> QueryResult:
         logger.info("Executando consulta gerada em modo somente leitura.")
@@ -144,18 +158,30 @@ class CineDataAgent:
             raise
 
     def query(self, question: str) -> AgentResult:
-        """Gere e execute SQL, permitindo uma correção de erro recuperável."""
+        """Gere ou reutilize SQL da sessão e execute com até uma correção."""
         timeout = validate_query_timeout(self.query_timeout_seconds)
         reference = (
             self.reference_date if self.reference_date is not None else date.today()
         )
-        sql = self.generate_sql(question, reference_date=reference)
+        # Valide pergunta e opções também quando houver SQL na memória.
+        messages = build_sql_prompt(
+            question, self._schema_context,
+            reference_date=reference, max_rows=self.max_rows,
+        )
+        cache_key = (question, reference, self.max_rows)
+        sql = self._sql_cache.get(cache_key)
+        if sql is None:
+            sql = self._generate_sql(messages)
+        else:
+            logger.info("Reutilizando SQL validado desta sessão.")
         corrected = False
         try:
             result = self._execute_sql(sql, timeout)
-        except QueryExecutionError as error:
+        except (DatabaseConnectionError, QueryBlockedError, QueryExecutionError) as error:
+            self._sql_cache.pop(cache_key, None)
             if (
-                not error.recoverable
+                not isinstance(error, QueryExecutionError)
+                or not error.recoverable
                 or isinstance(error, (QueryTimeoutError, QueryLimitError))
             ):
                 raise
@@ -165,11 +191,18 @@ class CineDataAgent:
                 error.sqlite_error or str(error),
                 reference_date=reference, max_rows=self.max_rows,
             )
+            started = monotonic()
             response = self._client.complete(messages.system, messages.user)
+            logger.info("Correção de SQL recebida em %.3f s.", monotonic() - started)
             sql = _validated_sql(response)
             corrected = True
             # Fora do try da primeira execução: uma nova falha encerra o fluxo.
             result = self._execute_sql(sql, timeout)
+        # Guarde somente SQL executado com sucesso, nunca linhas ou respostas.
+        self._sql_cache[cache_key] = result.sql
+        self._sql_cache.move_to_end(cache_key)
+        if len(self._sql_cache) > MAX_CACHED_SQL:
+            self._sql_cache.popitem(last=False)
         return AgentResult(
             question=question,
             sql=result.sql,
@@ -183,19 +216,25 @@ class CineDataAgent:
     def ask(self, question: str) -> AgentResult:
         """Consulte e redija uma resposta, sem repetir a chamada de redação.
 
-        Resultados vazios recebem uma mensagem local. Falhas na redação
-        conservam o resultado consultável em AnswerGenerationError.result.
+        Resultados vazios e contagens escalares recebem uma mensagem local.
+        Falhas na redação conservam o resultado em AnswerGenerationError.result.
         Use query para obter os dados sem enviá-los ao modelo de redação.
         """
         result = self.query(question)
         if not result.rows:
             return replace(result, answer=EMPTY_RESULT_ANSWER)
+        count_answer = local_count_answer(result)
+        if count_answer is not None:
+            logger.info("Contagem redigida localmente, sem chamada adicional ao modelo.")
+            return replace(result, answer=count_answer)
         try:
             prompt = build_answer_prompt(result)
             logger.info("Iniciando redação com contexto limitado de resultados.")
+            started = monotonic()
             answer = self._client.complete(
                 prompt.messages.system, prompt.messages.user, max_tokens=2_048,
             )
+            logger.info("Redação pelo modelo concluída em %.3f s.", monotonic() - started)
             if (
                 not isinstance(answer, str) or not answer.strip()
                 or "\x00" in answer or len(answer) > MAX_ANSWER_CHARS

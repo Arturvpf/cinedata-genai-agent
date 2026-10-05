@@ -59,7 +59,7 @@ def test_ask_answers_real_result_with_two_calls_and_preserves_database(
 ) -> None:
     original = answer_database.read_bytes()
     client.complete.side_effect = [
-        "SELECT COUNT(*) AS total FROM dim_movies", "Existem 3 filmes no catálogo.",
+        "SELECT SUM(1) AS total FROM dim_movies", "Existem 3 filmes no catálogo.",
     ]
     result = CineDataAgent(answer_database, client).ask("Quantos filmes existem?")
     assert result.rows == ((3,),)
@@ -104,7 +104,7 @@ def test_empty_result_gets_local_message_without_final_call(
 def test_zero_and_null_aggregates_are_sent_to_answer_model(
     answer_database: Path, client: Mock, value,
 ) -> None:
-    sql = ("SELECT COUNT(*) AS total FROM dim_movies WHERE 0" if value == 0
+    sql = ("SELECT COALESCE(SUM(sk_movie_id), 0) AS total FROM dim_movies WHERE 0" if value == 0
            else "SELECT SUM(sk_movie_id) AS total FROM dim_movies WHERE 0")
     client.complete.side_effect = [sql, "Resultado agregado."]
     result = CineDataAgent(answer_database, client).ask("Total?")
@@ -131,7 +131,7 @@ def test_correction_then_answer_uses_final_sql_without_further_retry(
 ) -> None:
     client.complete.side_effect = [
         "SELECT missing_column FROM dim_movies",
-        "SELECT COUNT(*) AS total FROM dim_movies", "Existem 3 filmes.",
+        "SELECT SUM(1) AS total FROM dim_movies", "Existem 3 filmes.",
     ]
     result = CineDataAgent(answer_database, client).ask("Quantos filmes?")
     assert result.correction_attempted
@@ -181,7 +181,7 @@ def test_final_api_error_preserves_sql_result_without_retry(
                                                        id="oversized-answer")],
 )
 def test_invalid_final_answer_keeps_result(answer_database: Path, client: Mock, answer):
-    client.complete.side_effect = ["SELECT COUNT(*) FROM dim_movies", answer]
+    client.complete.side_effect = ["SELECT SUM(1) FROM dim_movies", answer]
     with pytest.raises(AnswerGenerationError) as caught:
         CineDataAgent(answer_database, client).ask("Total")
     assert isinstance(caught.value.__cause__, InvalidModelResponseError)
@@ -190,7 +190,7 @@ def test_invalid_final_answer_keeps_result(answer_database: Path, client: Mock, 
 
 
 def test_text_answer_is_never_executed_as_sql(answer_database: Path, client: Mock):
-    client.complete.side_effect = ["SELECT COUNT(*) FROM dim_movies", "DROP TABLE dim_movies"]
+    client.complete.side_effect = ["SELECT SUM(1) FROM dim_movies", "DROP TABLE dim_movies"]
     result = CineDataAgent(answer_database, client).ask("Total")
     assert result.answer == "DROP TABLE dim_movies"
     with sqlite3.connect(answer_database) as connection:
@@ -312,7 +312,7 @@ def test_final_error_log_does_not_expose_provider_message(
     answer_database: Path, client: Mock, caplog: pytest.LogCaptureFixture,
 ):
     client.complete.side_effect = [
-        "SELECT COUNT(*) FROM dim_movies", LLMRateLimitError("private-provider-marker"),
+        "SELECT SUM(1) FROM dim_movies", LLMRateLimitError("private-provider-marker"),
     ]
     with caplog.at_level("INFO", logger="cinedata"), pytest.raises(AnswerGenerationError):
         CineDataAgent(answer_database, client).ask("Total")

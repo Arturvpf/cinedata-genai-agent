@@ -60,7 +60,7 @@ def args_for(env_file, *args):
 def test_one_question_renders_answer_and_closes_client(cli_setup, capsys):
     env_file, database, client = cli_setup
     original = database.read_bytes()
-    client.complete.side_effect = ["SELECT COUNT(*) AS total FROM dim_movies", "Existem 3 filmes."]
+    client.complete.side_effect = ["SELECT SUM(1) AS total FROM dim_movies", "Existem 3 filmes."]
     status = cli.main(args_for(env_file, "--question", "Quantos filmes?"))
     output = capsys.readouterr()
     assert status == 0
@@ -89,7 +89,7 @@ def test_raw_displays_sql_rows_and_skips_redaction(cli_setup, capsys):
 
 def test_debug_displays_audit_and_package_logs_without_secrets(cli_setup, capsys):
     env_file, _, client = cli_setup
-    client.complete.side_effect = ["SELECT COUNT(*) AS total FROM dim_movies", "Existem 3 filmes."]
+    client.complete.side_effect = ["SELECT SUM(1) AS total FROM dim_movies", "Existem 3 filmes."]
     assert cli.main(args_for(env_file, "--debug", "--question", "private-question-marker")) == 0
     output = capsys.readouterr()
     assert "private-question-marker" in output.out
@@ -137,6 +137,23 @@ def test_interactive_error_allows_next_user_question_without_automatic_retry(
     assert json.loads(client.complete.call_args_list[0].args[1])["question"] == "Primeira"
     assert json.loads(client.complete.call_args_list[1].args[1])["question"] == "Segunda"
     assert client.closed
+
+
+def test_interactive_repeated_count_skips_second_generation(cli_setup, monkeypatch, capsys):
+    env_file, database, client = cli_setup
+    original = database.read_bytes()
+    client.complete.side_effect = ["SELECT COUNT(*) FROM dim_movies"]
+    monkeypatch.setattr(builtins, "input", Mock(side_effect=[
+        "Quantos filmes existem no catalogo?", "Quantos filmes existem no catalogo?", "sair",
+    ]))
+    assert cli.main(args_for(env_file, "--debug")) == 0
+    output = capsys.readouterr()
+    assert output.out.count("Resultado da contagem: 3.") == 2
+    assert "Erro:" not in output.out
+    assert "Reutilizando SQL validado desta sessão." in output.err
+    client.complete.assert_called_once()
+    assert client.closed
+    assert database.read_bytes() == original
 
 
 def test_interactive_eof_is_normal_exit(cli_setup, monkeypatch, capsys):
@@ -213,7 +230,7 @@ def test_blocked_query_is_reported_and_keeps_database(cli_setup, capsys):
 
 def test_failed_answer_shows_saved_result_and_returns_failure(cli_setup, capsys):
     env_file, _, client = cli_setup
-    client.complete.side_effect = ["SELECT COUNT(*) AS total FROM dim_movies", LLMRateLimitError("Limite")]
+    client.complete.side_effect = ["SELECT SUM(1) AS total FROM dim_movies", LLMRateLimitError("Limite")]
     assert cli.main(args_for(env_file, "--question", "Total")) == 1
     output = capsys.readouterr()
     assert "resultado SQL permanece disponível" in output.err
